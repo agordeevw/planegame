@@ -4,6 +4,8 @@ set(PROJECT_NAME planegame)
 
 set(SDL2_DIR "${CMAKE_SOURCE_DIR}/external/SDL2-2.26.1/cmake")
 find_package(SDL2 REQUIRED)
+set(SDL2_image_DIR "${CMAKE_SOURCE_DIR}/external/SDL2_image-2.6.2/cmake")
+find_package(SDL2_image REQUIRED)
 
 file(GLOB_RECURSE PROJECT_SOURCES
     glad/glad.h
@@ -13,12 +15,11 @@ file(GLOB_RECURSE PROJECT_SOURCES
 add_executable(${PROJECT_NAME} WIN32 ${PROJECT_SOURCES})
 
 target_link_libraries(${PROJECT_NAME}
-    SDL2::SDL2main SDL2::SDL2)
+    SDL2::SDL2main SDL2::SDL2 glm::glm)
 
 target_include_directories(${PROJECT_NAME}
     PUBLIC
-        ${CMAKE_CURRENT_SOURCE_DIR}
-        ${SDL2_INCLUDE_DIR})
+        ${CMAKE_CURRENT_SOURCE_DIR})
 
 source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${PROJECT_SOURCES})
 

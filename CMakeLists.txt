@@ -16,7 +16,6 @@ if(MSVC)
     set(CMAKE_EXE_LINKER_FLAGS "-DEBUG")
     
     string(REGEX REPLACE "/W[0-9]" "" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
-    
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /W3")
     
 	set(MSVC_DISABLE_WARNINGS "4100;4251;4275" CACHE STRING "Disable specific warnings for MSVC")
@@ -44,5 +43,7 @@ endif()
 if(WIN32)
     set(CMAKE_BUILD_PARALLEL_LEVEL $ENV{NUMBER_OF_PROCESSORS})
 endif()
+
+add_subdirectory(external/glm)
 
 add_subdirectory(src)

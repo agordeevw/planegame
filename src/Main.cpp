@@ -1,7 +1,68 @@
 #include <SDL.h>
 #include <glad/glad.h>
+#include <glm/glm.hpp>
+#include <glm/gtx/quaternion.hpp>
 
 #include <memory>
+#include <vector>
+
+struct Vertex {
+  glm::vec3 position;
+  glm::vec3 color;
+  glm::vec2 uv;
+};
+
+struct Transform {
+  void translate(const glm::vec3& v) {
+    position += v;
+  }
+  void rotateLocal(const glm::vec3& v, float angle) {
+    rotation = glm::rotate(rotation, angle, v);
+  }
+  void rotateGlobal(const glm::vec3& v, float angle) {
+    glm::quat invRotation = glm::inverse(rotation);
+    rotation = glm::rotate(rotation, angle, glm::rotate(invRotation, v));
+  }
+
+  glm::vec3 forward() const {
+    glm::vec3 ret{ 0.0, 0.0, -1.0 };
+    ret = rotation * ret;
+    return ret;
+  }
+
+  glm::vec3 up() const {
+    glm::vec3 ret{ 0.0, 1.0, 0.0 };
+    ret = rotation * ret;
+    return ret;
+  }
+
+  glm::vec3 right() const {
+    glm::vec3 ret{ 1.0, 0.0, 0.0 };
+    ret = rotation * ret;
+    return ret;
+  }
+
+  glm::mat4x4 transform() const {
+    return glm::translate(glm::identity<glm::mat4>(), position) * glm::toMat4(rotation);
+  }
+
+  glm::vec3 position = glm::zero<glm::vec3>();
+  glm::quat rotation = glm::identity<glm::quat>();
+};
+
+struct Camera {
+  glm::mat4x4 view() const {
+    return glm::lookAt(transform.position, transform.position + transform.forward(), transform.up());
+  }
+
+  glm::mat4x4 projection() const {
+    return glm::perspective(fov, aspectRatio, 0.01f, 1000.0f);
+  }
+
+  Transform transform{};
+  float fov = glm::radians(90.0f);
+  float aspectRatio = 1.0f;
+};
 
 class Application {
 public:
@@ -56,16 +117,38 @@ public:
   GLuint binding(GLuint idx) { return idx; }
 
   void run() {
-    SDL_ShowWindow(m_window);
+    SDL_GL_GetDrawableSize(m_window, &m_width, &m_height);
 
-    double time = 0.0;
+    m_camera.aspectRatio = float(m_width) / float(m_height);
+    m_camera.transform.position = glm::vec3{ 0.0, 0.0, 10.0 };
+
+    Transform objects[3]{};
+    objects[1].position.x -= 10.0;
+    objects[2].position.x += 10.0;
+
+    Transform land;
+    land.position.y -= 10.0;
+    GLuint vertexBufferLand;
+    glCreateBuffers(1, &vertexBufferLand);
+    Vertex landPoints[]{
+      Vertex{ { -100.0f, 0.0f, -100.0f }, { 0.2f, 0.5f, 0.2f } },
+      Vertex{ { 100.0f, 0.0f, -100.0f }, { 0.2f, 0.5f, 0.2f } },
+      Vertex{ { 100.0f, 0.0f, 100.0f }, { 0.2f, 0.5f, 0.2f } },
+      Vertex{ { -100.0f, 0.0f, 100.0f }, { 0.2f, 0.5f, 0.2f } },
+    };
+    glNamedBufferData(vertexBufferLand, sizeof(landPoints), landPoints, GL_STATIC_DRAW);
+
+    GLuint elementBufferLand;
+    glCreateBuffers(1, &elementBufferLand);
+    uint32_t indicesLand[]{ 0, 2, 1, 0, 3, 2 };
+    glNamedBufferData(elementBufferLand, sizeof(indicesLand), indicesLand, GL_STATIC_DRAW);
 
     GLuint vertexBuffer;
     glCreateBuffers(1, &vertexBuffer);
-    float points[]{
-      -1.0, -1.0, 1.0, 0.0, 0.0,
-      1.0, -1.0, 0.0, 1.0, 0.0,
-      0.0, 1.0, 0.0, 0.0, 1.0
+    Vertex points[]{
+      Vertex{ { -1.0, -1.0, 0.0 }, { 1.0, 0.0, 0.0 } },
+      Vertex{ { 1.0, -1.0, 0.0 }, { 0.0, 1.0, 0.0 } },
+      Vertex{ { 0.0, 1.0, 0.0 }, { 0.0, 0.0, 1.0 } }
     };
     glNamedBufferData(vertexBuffer, sizeof(points), points, GL_STATIC_DRAW);
 
@@ -74,22 +157,32 @@ public:
     uint32_t indices[]{ 0, 1, 2 };
     glNamedBufferData(elementBuffer, sizeof(indices), indices, GL_STATIC_DRAW);
 
-    GLuint uniformBuffer;
-    glCreateBuffers(1, &uniformBuffer);
-    float transform[4]{};
-    glNamedBufferData(uniformBuffer, sizeof(transform), nullptr, GL_DYNAMIC_DRAW);
+    struct ViewProjectionMatrix {
+      glm::mat4x4 view;
+      glm::mat4x4 projection;
+    } cameraViewProjection;
+
+    struct TransformMatrix {
+      glm::mat4x4 transform;
+    } objectTransform;
+
+    GLuint uniformBuffers[2];
+    glCreateBuffers(2, uniformBuffers);
+    glNamedBufferData(uniformBuffers[0], sizeof(ViewProjectionMatrix), nullptr, GL_DYNAMIC_DRAW);
+    glNamedBufferData(uniformBuffers[1], sizeof(TransformMatrix), nullptr, GL_DYNAMIC_DRAW);
 
     GLuint vertexArray;
     glCreateVertexArrays(1, &vertexArray);
     {
       glEnableVertexArrayAttrib(vertexArray, attrib(0));
-      glVertexArrayAttribFormat(vertexArray, attrib(0), 2, GL_FLOAT, GL_FALSE, 0);
+      glVertexArrayAttribFormat(vertexArray, attrib(0), 3, GL_FLOAT, GL_FALSE, 0);
       glVertexArrayAttribBinding(vertexArray, attrib(0), binding(0));
       glEnableVertexArrayAttrib(vertexArray, attrib(1));
-      glVertexArrayAttribFormat(vertexArray, attrib(1), 3, GL_FLOAT, GL_FALSE, 2 * sizeof(float));
+      glVertexArrayAttribFormat(vertexArray, attrib(1), 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float));
       glVertexArrayAttribBinding(vertexArray, attrib(1), binding(0));
-      glVertexArrayVertexBuffer(vertexArray, binding(0), vertexBuffer, 0, 5 * sizeof(float));
-      glVertexArrayElementBuffer(vertexArray, elementBuffer);
+      glEnableVertexArrayAttrib(vertexArray, attrib(2));
+      glVertexArrayAttribFormat(vertexArray, attrib(2), 2, GL_FLOAT, GL_FALSE, 6 * sizeof(float));
+      glVertexArrayAttribBinding(vertexArray, attrib(2), binding(0));
     }
 
     char buffer[1024];
@@ -97,20 +190,22 @@ public:
     GLuint shaderV = glCreateShader(GL_VERTEX_SHADER);
     {
       const char* source = "#version 460\n"
-                           "layout (location = 0) in vec2 inPosition;\n"
+                           "layout (location = 0) in vec3 inPosition;\n"
                            "layout (location = 1) in vec3 inColor;\n"
-                           "out vec2 position;\n"
-                           "out vec3 color;\n"
+                           "layout (location = 2) in vec2 inUV;\n"
+                           "layout (location = 0) out vec3 position;\n"
+                           "layout (location = 1) out vec3 color;\n"
                            "out gl_PerVertex {\n"
                            "  vec4 gl_Position;\n"
                            "  float gl_PointSize;\n"
                            "  float gl_ClipDistance[];\n"
                            "};\n"
-                           "layout(row_major, binding=0) uniform Transform { mat2 transform; };\n"
+                           "layout(binding = 0) uniform ViewProjection { mat4 view; mat4 projection; };\n"
+                           "layout(binding = 1) uniform Transform { mat4 transform; };\n"
                            "void main() {\n"
-                           "  position = transform * inPosition.xy;\n"
+                           "  gl_Position = projection * view * transform * vec4(inPosition, 1.0);\n"
+                           "  position = gl_Position.xyz;\n"
                            "  color = inColor.rgb;\n"
-                           "  gl_Position = vec4(position, 0.0, 1.0);\n"
                            "}";
 
       glShaderSource(shaderV, 1, &source, nullptr);
@@ -123,8 +218,8 @@ public:
     GLuint shaderF = glCreateShader(GL_FRAGMENT_SHADER);
     {
       const char* source = "#version 460\n"
-                           "in vec2 position;\n"
-                           "in vec3 color;\n"
+                           "layout (location = 0) in vec3 position;\n"
+                           "layout (location = 1) in vec3 color;\n"
                            "out vec4 fragColor;\n"
                            "void main() {\n"
                            "fragColor = vec4(color, 1.0);\n"
@@ -146,13 +241,19 @@ public:
     if (buffer[0])
       SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "shader link error", buffer, m_window);
 
-    GLuint programUniformBlockIndex = glGetUniformBlockIndex(program, "Transform");
-    glUniformBlockBinding(program, programUniformBlockIndex, 0);
+    GLuint programUniformBlockIndex1 = glGetUniformBlockIndex(program, "ViewProjection");
+    glUniformBlockBinding(program, programUniformBlockIndex1, 0);
+    GLuint programUniformBlockIndex2 = glGetUniformBlockIndex(program, "Transform");
+    glUniformBlockBinding(program, programUniformBlockIndex2, 1);
 
     GLuint pipeline;
     glCreateProgramPipelines(1, &pipeline);
 
     glUseProgramStages(pipeline, GL_ALL_SHADER_BITS, program);
+
+    SDL_ShowWindow(m_window);
+
+    double time = 0.0;
 
     uint64_t ticksLast = SDL_GetPerformanceCounter();
     uint64_t frequency = SDL_GetPerformanceFrequency();
@@ -163,28 +264,109 @@ public:
 
       uint64_t ticksNow = SDL_GetPerformanceCounter();
       uint64_t ticksDiff = ticksNow - ticksLast;
-      time += double(ticksDiff) / double(frequency);
+      double delta = double(ticksDiff) / double(frequency);
+      time += delta;
+      float dt = float(delta);
       ticksLast = ticksNow;
 
+      // Update
       {
-        float c = std::cos(time);
-        float s = std::sin(time);
-        transform[0] = c;
-        transform[1] = -s;
-        transform[2] = s;
-        transform[3] = c;
+        float speed = 10.0;
+        if (m_input.keyDown[SDL_SCANCODE_LSHIFT]) {
+          speed = 20.0;
+        }
 
-        char* buf = (char*)glMapNamedBuffer(uniformBuffer, GL_WRITE_ONLY);
-        memcpy(buf, transform, sizeof(transform));
-        glUnmapNamedBuffer(uniformBuffer);
+        if (m_input.keyDown[SDL_SCANCODE_W]) {
+          m_camera.transform.position += m_camera.transform.forward() * speed * float(dt);
+        }
+        if (m_input.keyDown[SDL_SCANCODE_S]) {
+          m_camera.transform.position -= m_camera.transform.forward() * speed * float(dt);
+        }
+        if (m_input.keyDown[SDL_SCANCODE_D]) {
+          m_camera.transform.position += m_camera.transform.right() * speed * float(dt);
+        }
+        if (m_input.keyDown[SDL_SCANCODE_A]) {
+          m_camera.transform.position -= m_camera.transform.right() * speed * float(dt);
+        }
+        if (m_input.keyDown[SDL_SCANCODE_Q]) {
+          m_camera.transform.position += m_camera.transform.up() * speed * float(dt);
+        }
+        if (m_input.keyDown[SDL_SCANCODE_Z]) {
+          m_camera.transform.position -= m_camera.transform.up() * speed * float(dt);
+        }
+        m_camera.transform.rotateGlobal(glm::vec3(0.0f, 1.0f, 0.0f), -float(dt) * m_input.mousedx);
+        m_camera.transform.rotateLocal(glm::vec3(1.0f, 0.0f, 0.0f), -float(dt) * m_input.mousedy);
       }
 
       glClear(GL_COLOR_BUFFER_BIT);
 
       glBindVertexArray(vertexArray);
       glBindProgramPipeline(pipeline);
-      glBindBufferBase(GL_UNIFORM_BUFFER, 0, uniformBuffer);
 
+      glVertexArrayVertexBuffer(vertexArray, binding(0), vertexBufferLand, 0, 8 * sizeof(float));
+      glVertexArrayElementBuffer(vertexArray, elementBufferLand);
+
+      {
+        cameraViewProjection.view = m_camera.view();
+        cameraViewProjection.projection = m_camera.projection();
+        {
+          char* buf = (char*)glMapNamedBuffer(uniformBuffers[0], GL_WRITE_ONLY);
+          memcpy(buf, &cameraViewProjection, sizeof(cameraViewProjection));
+          glUnmapNamedBuffer(uniformBuffers[0]);
+        }
+      }
+      glBindBufferBase(GL_UNIFORM_BUFFER, 0, uniformBuffers[0]);
+
+      {
+        objectTransform.transform = land.transform();
+        {
+          char* buf = (char*)glMapNamedBuffer(uniformBuffers[1], GL_WRITE_ONLY);
+          memcpy(buf, &objectTransform, sizeof(objectTransform));
+          glUnmapNamedBuffer(uniformBuffers[1]);
+        }
+      }
+      glBindBufferBase(GL_UNIFORM_BUFFER, 1, uniformBuffers[1]);
+      glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, nullptr);
+
+      glVertexArrayVertexBuffer(vertexArray, binding(0), vertexBuffer, 0, 8 * sizeof(float));
+      glVertexArrayElementBuffer(vertexArray, elementBuffer);
+
+      {
+        objects[0].rotateLocal(objects[0].forward(), dt);
+        objectTransform.transform = objects[0].transform();
+        {
+          char* buf = (char*)glMapNamedBuffer(uniformBuffers[1], GL_WRITE_ONLY);
+          memcpy(buf, &objectTransform, sizeof(objectTransform));
+          glUnmapNamedBuffer(uniformBuffers[1]);
+        }
+      }
+      glBindBufferBase(GL_UNIFORM_BUFFER, 1, uniformBuffers[1]);
+      glDrawElements(GL_TRIANGLES, 3, GL_UNSIGNED_INT, nullptr);
+
+      {
+        objects[1].rotateLocal(objects[1].forward(), 0.5f * dt);
+        objects[1].rotateLocal(objects[1].up(), 0.5f * dt);
+        objectTransform.transform = objects[1].transform();
+        {
+          char* buf = (char*)glMapNamedBuffer(uniformBuffers[1], GL_WRITE_ONLY);
+          memcpy(buf, &objectTransform, sizeof(objectTransform));
+          glUnmapNamedBuffer(uniformBuffers[1]);
+        }
+      }
+      glBindBufferBase(GL_UNIFORM_BUFFER, 1, uniformBuffers[1]);
+      glDrawElements(GL_TRIANGLES, 3, GL_UNSIGNED_INT, nullptr);
+
+      {
+        objects[2].rotateLocal(objects[2].forward(), -0.5f * dt);
+        objects[2].rotateLocal(objects[2].up(), -0.5f * dt);
+        objectTransform.transform = objects[2].transform();
+        {
+          char* buf = (char*)glMapNamedBuffer(uniformBuffers[1], GL_WRITE_ONLY);
+          memcpy(buf, &objectTransform, sizeof(objectTransform));
+          glUnmapNamedBuffer(uniformBuffers[1]);
+        }
+      }
+      glBindBufferBase(GL_UNIFORM_BUFFER, 1, uniformBuffers[1]);
       glDrawElements(GL_TRIANGLES, 3, GL_UNSIGNED_INT, nullptr);
 
       SDL_GL_SwapWindow(m_window);
@@ -193,12 +375,29 @@ public:
 
 private:
   void handleEvents() {
+    m_input.mousedx = 0.0;
+    m_input.mousedy = 0.0;
+    SDL_SetRelativeMouseMode(SDL_TRUE);
+
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
       switch (event.type) {
         case SDL_QUIT: {
           m_quit = true;
           return;
+        }
+        case SDL_KEYDOWN:
+        case SDL_KEYUP: {
+          auto scancode = event.key.keysym.scancode;
+          m_input.keyDown[scancode] = event.type == SDL_KEYDOWN;
+          m_input.keyPressed[scancode] = event.key.state == SDL_PRESSED;
+          m_input.keyReleased[scancode] = event.key.state == SDL_RELEASED;
+          break;
+        }
+        case SDL_MOUSEMOTION: {
+          m_input.mousedx = float(event.motion.xrel);
+          m_input.mousedy = float(event.motion.yrel);
+          break;
         }
         default:
           break;
@@ -210,6 +409,15 @@ private:
   SDL_GLContext m_context = nullptr;
   bool m_quit = false;
   bool m_shutdownCalled = false;
+  int m_width, m_height;
+  Camera m_camera;
+  struct Input {
+    bool keyDown[SDL_NUM_SCANCODES]{};
+    bool keyPressed[SDL_NUM_SCANCODES]{};
+    bool keyReleased[SDL_NUM_SCANCODES]{};
+    float mousedx = 0.0;
+    float mousedy = 0.0;
+  } m_input;
 };
 
 int main(int, char**) {
