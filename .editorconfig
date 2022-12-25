@@ -1,0 +1,12 @@
+﻿# To learn more about .editorconfig see https://aka.ms/editorconfigdocs
+root=true
+
+# All files
+[*]
+indent_style = space
+
+[*.{cpp,h}]
+charset = utf-8
+end_of_line = crlf
+indent_style = space
+insert_final_newline = true
