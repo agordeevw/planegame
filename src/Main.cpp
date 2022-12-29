@@ -16,12 +16,13 @@ struct Transform {
   void translate(const glm::vec3& v) {
     position += v;
   }
+
   void rotateLocal(const glm::vec3& v, float angle) {
     rotation = glm::rotate(rotation, angle, v);
   }
+
   void rotateGlobal(const glm::vec3& v, float angle) {
-    glm::quat invRotation = glm::inverse(rotation);
-    rotation = glm::rotate(rotation, angle, glm::rotate(invRotation, v));
+    rotation = glm::rotate(rotation, angle, glm::rotate(glm::inverse(rotation), v));
   }
 
   glm::vec3 forward() const {
@@ -77,7 +78,7 @@ public:
     m_window = SDL_CreateWindow("",
       SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
       800, 600,
-      SDL_WINDOW_OPENGL);
+      SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE);
     if (!m_window)
       return 1;
 
@@ -116,15 +117,19 @@ public:
   GLuint attrib(GLuint idx) { return idx; }
   GLuint binding(GLuint idx) { return idx; }
 
+  static void glDebugCallback(GLenum src, GLenum type, GLuint id, GLenum severity, GLsizei length, GLchar const* msg, void const* user_param) {
+    printf("gl error: %s\n", msg);
+  }
+
   void run() {
+    glEnable(GL_DEBUG_OUTPUT);
+    glDebugMessageCallback(glDebugCallback, this);
+    glDebugMessageControl(GL_DONT_CARE, GL_DONT_CARE, GL_DEBUG_SEVERITY_NOTIFICATION, 0, nullptr, GL_FALSE);
+
     SDL_GL_GetDrawableSize(m_window, &m_width, &m_height);
 
     m_camera.aspectRatio = float(m_width) / float(m_height);
     m_camera.transform.position = glm::vec3{ 0.0, 0.0, 10.0 };
-
-    Transform objects[3]{};
-    objects[1].position.x -= 10.0;
-    objects[2].position.x += 10.0;
 
     Transform land;
     land.position.y -= 10.0;
@@ -142,6 +147,10 @@ public:
     glCreateBuffers(1, &elementBufferLand);
     uint32_t indicesLand[]{ 0, 2, 1, 0, 3, 2 };
     glNamedBufferData(elementBufferLand, sizeof(indicesLand), indicesLand, GL_STATIC_DRAW);
+
+    Transform objects[3]{};
+    objects[1].position.x -= 10.0;
+    objects[2].position.x += 10.0;
 
     GLuint vertexBuffer;
     glCreateBuffers(1, &vertexBuffer);
@@ -162,14 +171,14 @@ public:
       glm::mat4x4 projection;
     } cameraViewProjection;
 
-    struct TransformMatrix {
-      glm::mat4x4 transform;
-    } objectTransform;
+    struct TransformMatrices {
+      glm::mat4x4 transforms[128];
+    } objectTransforms;
 
     GLuint uniformBuffers[2];
     glCreateBuffers(2, uniformBuffers);
     glNamedBufferData(uniformBuffers[0], sizeof(ViewProjectionMatrix), nullptr, GL_DYNAMIC_DRAW);
-    glNamedBufferData(uniformBuffers[1], sizeof(TransformMatrix), nullptr, GL_DYNAMIC_DRAW);
+    glNamedBufferData(uniformBuffers[1], sizeof(TransformMatrices), nullptr, GL_DYNAMIC_DRAW);
 
     GLuint vertexArray;
     glCreateVertexArrays(1, &vertexArray);
@@ -201,10 +210,10 @@ public:
                            "  float gl_ClipDistance[];\n"
                            "};\n"
                            "layout(binding = 0) uniform ViewProjection { mat4 view; mat4 projection; };\n"
-                           "layout(binding = 1) uniform Transform { mat4 transform; };\n"
+                           "layout(binding = 1) uniform Transform { mat4 transforms[128]; };\n"
                            "void main() {\n"
-                           "  gl_Position = projection * view * transform * vec4(inPosition, 1.0);\n"
-                           "  position = gl_Position.xyz;\n"
+                           "  gl_Position = projection * view * transforms[gl_InstanceID] * vec4(inPosition, 1.0);\n"
+                           "  position = (transforms[gl_InstanceID] * vec4(inPosition, 1.0)).xyz;\n"
                            "  color = inColor.rgb;\n"
                            "}";
 
@@ -222,7 +231,10 @@ public:
                            "layout (location = 1) in vec3 color;\n"
                            "out vec4 fragColor;\n"
                            "void main() {\n"
-                           "fragColor = vec4(color, 1.0);\n"
+                           "  if (((int(0.5 * position.x) + int(0.5 * position.z)) & 1) == 1)\n"
+                           "    fragColor = vec4(color, 1.0);\n"
+                           "  else\n"
+                           "    fragColor = vec4(0.5 * color, 1.0);\n"
                            "}";
 
       glShaderSource(shaderF, 1, &source, nullptr);
@@ -253,8 +265,9 @@ public:
 
     SDL_ShowWindow(m_window);
 
+    SDL_bool relativeMouseMode = SDL_TRUE;
+    SDL_SetRelativeMouseMode(relativeMouseMode);
     double time = 0.0;
-
     uint64_t ticksLast = SDL_GetPerformanceCounter();
     uint64_t frequency = SDL_GetPerformanceFrequency();
     while (true) {
@@ -271,6 +284,11 @@ public:
 
       // Update
       {
+        if (m_input.keyDown[SDL_SCANCODE_LCTRL] && m_input.keyPressed[SDL_SCANCODE_C]) {
+          relativeMouseMode = relativeMouseMode == SDL_TRUE ? SDL_FALSE : SDL_TRUE;
+          SDL_SetRelativeMouseMode(relativeMouseMode);
+        }
+
         float speed = 10.0;
         if (m_input.keyDown[SDL_SCANCODE_LSHIFT]) {
           speed = 20.0;
@@ -296,9 +314,16 @@ public:
         }
         m_camera.transform.rotateGlobal(glm::vec3(0.0f, 1.0f, 0.0f), -float(dt) * m_input.mousedx);
         m_camera.transform.rotateLocal(glm::vec3(1.0f, 0.0f, 0.0f), -float(dt) * m_input.mousedy);
+
+        objects[0].rotateLocal(objects[0].forward(), dt);
+        objects[1].rotateLocal(objects[1].forward(), 0.5f * dt);
+        objects[1].rotateLocal(objects[1].up(), 0.5f * dt);
+        objects[2].rotateLocal(objects[2].forward(), -0.5f * dt);
+        objects[2].rotateLocal(objects[2].up(), -0.5f * dt);
       }
 
-      glClear(GL_COLOR_BUFFER_BIT);
+      glEnable(GL_DEPTH_TEST);
+      glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
       glBindVertexArray(vertexArray);
       glBindProgramPipeline(pipeline);
@@ -318,56 +343,31 @@ public:
       glBindBufferBase(GL_UNIFORM_BUFFER, 0, uniformBuffers[0]);
 
       {
-        objectTransform.transform = land.transform();
+        objectTransforms.transforms[0] = land.transform();
         {
           char* buf = (char*)glMapNamedBuffer(uniformBuffers[1], GL_WRITE_ONLY);
-          memcpy(buf, &objectTransform, sizeof(objectTransform));
+          memcpy(buf, &objectTransforms, sizeof(glm::mat4x4) * 1);
           glUnmapNamedBuffer(uniformBuffers[1]);
         }
       }
       glBindBufferBase(GL_UNIFORM_BUFFER, 1, uniformBuffers[1]);
-      glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, nullptr);
+      glDrawElementsInstanced(GL_TRIANGLES, 6, GL_UNSIGNED_INT, nullptr, 1);
 
       glVertexArrayVertexBuffer(vertexArray, binding(0), vertexBuffer, 0, 8 * sizeof(float));
       glVertexArrayElementBuffer(vertexArray, elementBuffer);
 
       {
-        objects[0].rotateLocal(objects[0].forward(), dt);
-        objectTransform.transform = objects[0].transform();
+        objectTransforms.transforms[0] = objects[0].transform();
+        objectTransforms.transforms[1] = objects[1].transform();
+        objectTransforms.transforms[2] = objects[2].transform();
         {
           char* buf = (char*)glMapNamedBuffer(uniformBuffers[1], GL_WRITE_ONLY);
-          memcpy(buf, &objectTransform, sizeof(objectTransform));
+          memcpy(buf, &objectTransforms, sizeof(glm::mat4x4) * 3);
           glUnmapNamedBuffer(uniformBuffers[1]);
         }
       }
       glBindBufferBase(GL_UNIFORM_BUFFER, 1, uniformBuffers[1]);
-      glDrawElements(GL_TRIANGLES, 3, GL_UNSIGNED_INT, nullptr);
-
-      {
-        objects[1].rotateLocal(objects[1].forward(), 0.5f * dt);
-        objects[1].rotateLocal(objects[1].up(), 0.5f * dt);
-        objectTransform.transform = objects[1].transform();
-        {
-          char* buf = (char*)glMapNamedBuffer(uniformBuffers[1], GL_WRITE_ONLY);
-          memcpy(buf, &objectTransform, sizeof(objectTransform));
-          glUnmapNamedBuffer(uniformBuffers[1]);
-        }
-      }
-      glBindBufferBase(GL_UNIFORM_BUFFER, 1, uniformBuffers[1]);
-      glDrawElements(GL_TRIANGLES, 3, GL_UNSIGNED_INT, nullptr);
-
-      {
-        objects[2].rotateLocal(objects[2].forward(), -0.5f * dt);
-        objects[2].rotateLocal(objects[2].up(), -0.5f * dt);
-        objectTransform.transform = objects[2].transform();
-        {
-          char* buf = (char*)glMapNamedBuffer(uniformBuffers[1], GL_WRITE_ONLY);
-          memcpy(buf, &objectTransform, sizeof(objectTransform));
-          glUnmapNamedBuffer(uniformBuffers[1]);
-        }
-      }
-      glBindBufferBase(GL_UNIFORM_BUFFER, 1, uniformBuffers[1]);
-      glDrawElements(GL_TRIANGLES, 3, GL_UNSIGNED_INT, nullptr);
+      glDrawElementsInstanced(GL_TRIANGLES, 3, GL_UNSIGNED_INT, nullptr, 3);
 
       SDL_GL_SwapWindow(m_window);
     }
@@ -377,7 +377,10 @@ private:
   void handleEvents() {
     m_input.mousedx = 0.0;
     m_input.mousedy = 0.0;
-    SDL_SetRelativeMouseMode(SDL_TRUE);
+    for (int scancode = 0; scancode < SDL_NUM_SCANCODES; scancode++) {
+      m_input.keyPressed[scancode] = false;
+      m_input.keyReleased[scancode] = false;
+    }
 
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
@@ -388,16 +391,27 @@ private:
         }
         case SDL_KEYDOWN:
         case SDL_KEYUP: {
-          auto scancode = event.key.keysym.scancode;
-          m_input.keyDown[scancode] = event.type == SDL_KEYDOWN;
-          m_input.keyPressed[scancode] = event.key.state == SDL_PRESSED;
-          m_input.keyReleased[scancode] = event.key.state == SDL_RELEASED;
+          if (event.key.repeat == 0) {
+            auto scancode = event.key.keysym.scancode;
+            m_input.prevKeyDown[scancode] = m_input.keyDown[scancode];
+            m_input.keyDown[scancode] = event.key.state == SDL_PRESSED;
+            m_input.keyPressed[scancode] = event.key.state == SDL_PRESSED;
+            m_input.keyReleased[scancode] = event.key.state == SDL_RELEASED;
+          }
           break;
         }
         case SDL_MOUSEMOTION: {
           m_input.mousedx = float(event.motion.xrel);
           m_input.mousedy = float(event.motion.yrel);
           break;
+        }
+        case SDL_WINDOWEVENT: {
+          switch (event.window.event) {
+            case SDL_WINDOWEVENT_RESIZED: {
+              SDL_GL_GetDrawableSize(m_window, &m_width, &m_height);
+              glViewport(0, 0, m_width, m_height);
+            }
+          }
         }
         default:
           break;
@@ -413,6 +427,7 @@ private:
   Camera m_camera;
   struct Input {
     bool keyDown[SDL_NUM_SCANCODES]{};
+    bool prevKeyDown[SDL_NUM_SCANCODES]{};
     bool keyPressed[SDL_NUM_SCANCODES]{};
     bool keyReleased[SDL_NUM_SCANCODES]{};
     float mousedx = 0.0;

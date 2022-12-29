@@ -12,10 +12,10 @@ file(GLOB_RECURSE PROJECT_SOURCES
     glad/glad.c
     Main.cpp)
 
-add_executable(${PROJECT_NAME} WIN32 ${PROJECT_SOURCES})
+add_executable(${PROJECT_NAME} ${PROJECT_SOURCES})
 
 target_link_libraries(${PROJECT_NAME}
-    SDL2::SDL2main SDL2::SDL2 glm::glm)
+    SDL2::SDL2main SDL2::SDL2 glm::glm SDL2_image::SDL2_image)
 
 target_include_directories(${PROJECT_NAME}
     PUBLIC
@@ -24,4 +24,4 @@ target_include_directories(${PROJECT_NAME}
 source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${PROJECT_SOURCES})
 
 install(TARGETS ${PROJECT_NAME})
-install(IMPORTED_RUNTIME_ARTIFACTS SDL2::SDL2)
+install(IMPORTED_RUNTIME_ARTIFACTS SDL2::SDL2 SDL2_image::SDL2_image)
