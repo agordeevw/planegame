@@ -1,9 +1,11 @@
+#include "Camera.h"
+#include "Transform.h"
+
 #include <SDL.h>
-#include <glad/glad.h>
-#include <glm/glm.hpp>
-#include <glm/gtx/quaternion.hpp>
+#include <planegame/Renderer/glad/glad.h>
 
 #include <memory>
+#include <random>
 #include <vector>
 
 struct Vertex {
@@ -12,61 +14,250 @@ struct Vertex {
   glm::vec2 uv;
 };
 
-struct Transform {
-  void translate(const glm::vec3& v) {
-    position += v;
-  }
-
-  void rotateLocal(const glm::vec3& v, float angle) {
-    rotation = glm::rotate(rotation, angle, v);
-  }
-
-  void rotateGlobal(const glm::vec3& v, float angle) {
-    rotation = glm::rotate(rotation, angle, glm::rotate(glm::inverse(rotation), v));
-  }
-
-  glm::vec3 forward() const {
-    glm::vec3 ret{ 0.0, 0.0, -1.0 };
-    ret = rotation * ret;
-    return ret;
-  }
-
-  glm::vec3 up() const {
-    glm::vec3 ret{ 0.0, 1.0, 0.0 };
-    ret = rotation * ret;
-    return ret;
-  }
-
-  glm::vec3 right() const {
-    glm::vec3 ret{ 1.0, 0.0, 0.0 };
-    ret = rotation * ret;
-    return ret;
-  }
-
-  glm::mat4x4 transform() const {
-    return glm::translate(glm::identity<glm::mat4>(), position) * glm::toMat4(rotation);
-  }
-
-  glm::vec3 position = glm::zero<glm::vec3>();
-  glm::quat rotation = glm::identity<glm::quat>();
+struct Input {
+  bool keyDown[SDL_NUM_SCANCODES]{};
+  bool prevKeyDown[SDL_NUM_SCANCODES]{};
+  bool keyPressed[SDL_NUM_SCANCODES]{};
+  bool keyReleased[SDL_NUM_SCANCODES]{};
+  float mousedx = 0.0;
+  float mousedy = 0.0;
 };
 
-struct Camera {
-  glm::mat4x4 view() const {
-    return glm::lookAt(transform.position, transform.position + transform.forward(), transform.up());
+struct Time {
+  double timeSinceStart;
+  float dt;
+};
+
+class Random {
+public:
+  template <class T>
+  T next(T min, T max) {
+    std::uniform_real_distribution<T> distr(min, max);
+    return distr(m_generator);
   }
 
-  glm::mat4x4 projection() const {
+private:
+  std::mt19937_64 m_generator;
+};
+
+class Component;
+
+class Object {
+public:
+  Transform transform;
+
+  void detachFromParent() {
+    if (m_parent) {
+      auto it = std::remove_if(m_parent->m_children.begin(), m_parent->m_children.end(), [this](Object* o) { return this == o; });
+      m_children.erase(it, m_parent->m_children.end());
+      m_parent = nullptr;
+    }
+  }
+
+  bool addChild(Object* object) {
+    if (object->m_parent == nullptr && std::find(m_children.begin(), m_children.end(), object) == std::end(m_children)) {
+      object->m_parent = this;
+      m_children.push_back(object);
+      return true;
+    }
+    return false;
+  }
+
+  Object* parent() const {
+    return m_parent;
+  }
+
+  const std::vector<Object*>& children() const {
+    return m_children;
+  }
+
+  bool addComponent(Component* component) {
+    if (std::find(m_components.begin(), m_components.end(), component) == std::end(m_components)) {
+      m_components.push_back(component);
+      return true;
+    }
+    return false;
+  }
+
+  template <class T>
+  T* getComponent() const {
+    T* ret = nullptr;
+    for (Component* component : m_components) {
+      if (ret = dynamic_cast<T*>(component))
+        break;
+    }
+    return ret;
+  }
+
+private:
+  std::vector<Component*> m_components;
+  Object* m_parent = nullptr;
+  std::vector<Object*> m_children;
+};
+
+class Component {
+public:
+  Component(Object& object)
+    : object(object), transform(object.transform) {
+    object.addComponent(this);
+  }
+  virtual ~Component() = default;
+
+  Object& object;
+  Transform& transform;
+};
+
+struct Camera final : public Component {
+  Camera(Object& object) : Component(object) {}
+
+  glm::mat4x4 viewMatrix4() const {
+    return glm::lookAt(object.transform.position, object.transform.position + object.transform.forward(), object.transform.up());
+  }
+
+  glm::mat4x4 projectionMatrix4() const {
     return glm::perspective(fov, aspectRatio, 0.01f, 1000.0f);
   }
 
-  Transform transform{};
   float fov = glm::radians(90.0f);
   float aspectRatio = 1.0f;
 };
 
+class Scene;
+
+class Script : public Component {
+public:
+  Script(Scene& scene, const Input& input, const Time& time, Random& random, Object& object)
+    : scene(scene), input(input), time(time), random(random), Component(object) {}
+  virtual ~Script() = default;
+
+  void init() {
+    if (!isInitialized) {
+      initialize();
+      isInitialized = true;
+    }
+  }
+  virtual void update() = 0;
+
+protected:
+  virtual void initialize() {}
+
+  template <class T>
+  T* makeScript(Object& object) {
+    auto ptr = std::make_unique<T>(scene, input, time, random, object);
+    T* ret = ptr.get();
+    scene.components.pendingScripts.push_back(std::move(ptr));
+    return ret;
+  }
+
+  Scene& scene;
+  const Input& input;
+  const Time& time;
+  Random& random;
+  bool isInitialized = false;
+};
+
+class Scene {
+public:
+  Object* makeObject() {
+    return objects.emplace_back(std::make_unique<Object>()).get();
+  }
+
+  std::vector<std::unique_ptr<Object>> objects;
+  Camera* mainCamera = nullptr;
+  struct Components {
+    std::vector<std::unique_ptr<Camera>> cameras;
+    std::vector<std::unique_ptr<Script>> scripts;
+    std::vector<std::unique_ptr<Script>> pendingScripts;
+  } components;
+};
+
+class FPSCameraScript final : public Script {
+public:
+  using Script::Script;
+
+  void update() override {
+    Transform& transform = object.transform;
+
+    float speed = m_speed;
+    if (input.keyDown[SDL_SCANCODE_LSHIFT]) {
+      speed *= 2.0;
+    }
+
+    if (input.keyDown[SDL_SCANCODE_W]) {
+      transform.position += transform.forward() * speed * time.dt;
+    }
+    if (input.keyDown[SDL_SCANCODE_S]) {
+      transform.position -= transform.forward() * speed * time.dt;
+    }
+    if (input.keyDown[SDL_SCANCODE_D]) {
+      transform.position += transform.right() * speed * time.dt;
+    }
+    if (input.keyDown[SDL_SCANCODE_A]) {
+      transform.position -= transform.right() * speed * time.dt;
+    }
+    if (input.keyDown[SDL_SCANCODE_Q]) {
+      transform.position += transform.up() * speed * time.dt;
+    }
+    if (input.keyDown[SDL_SCANCODE_Z]) {
+      transform.position -= transform.up() * speed * time.dt;
+    }
+    transform.rotateGlobal(glm::vec3(0.0f, 1.0f, 0.0f), -time.dt * input.mousedx);
+    transform.rotateLocal(glm::vec3(1.0f, 0.0f, 0.0f), -time.dt * input.mousedy);
+  }
+
+  float m_speed = 10.0;
+};
+
+class MovingObjectScript final : public Script {
+public:
+  using Script::Script;
+
+  void initialize() override {
+    m_chasedObject = &scene.mainCamera->object;
+    m_forwardRotationSpeed = random.next(-1.0f, 1.0f);
+    m_rightRotationSpeed = random.next(-1.0f, 1.0f);
+    transform.position.x += random.next(-100.0f, 100.0f);
+    transform.position.y += 0.1f * random.next(-100.0f, 100.0f);
+    transform.position.z += random.next(-100.0f, 100.0f);
+  }
+
+  void update() override {
+    transform.rotateLocal(transform.forward(), m_forwardRotationSpeed * time.dt);
+    transform.rotateLocal(transform.right(), m_rightRotationSpeed * time.dt);
+    glm::vec3 delta = m_chasedObject->transform.position - transform.position;
+    glm::vec3 dir = glm::normalize(delta);
+    if (input.keyPressed[SDL_SCANCODE_E]) {
+      dir *= -10000.0f * (1.0f / (1.0f + glm::l2Norm(delta)));
+    }
+    m_velocity += dir * time.dt;
+    transform.position += m_velocity * time.dt;
+  }
+
+  Object* m_chasedObject = nullptr;
+  float m_forwardRotationSpeed = 1.0f;
+  float m_rightRotationSpeed = 1.0f;
+  glm::vec3 m_velocity{};
+};
+
+class MovingObjectGeneratorScript final : public Script {
+public:
+  using Script::Script;
+
+  void update() override {
+    if (input.keyPressed[SDL_SCANCODE_SPACE]) {
+      Object* newObject = scene.makeObject();
+      MovingObjectScript* script = makeScript<MovingObjectScript>(*newObject);
+    }
+  }
+};
+
 class Application {
 public:
+  template <class T, class... Args>
+  std::unique_ptr<T> makeScript(Args&&... args) {
+    return std::make_unique<T>(m_scene, m_input, m_time, m_random, std::forward<Args>(args)...);
+  }
+
   ~Application() {
     shutDown();
   }
@@ -127,12 +318,18 @@ public:
     glDebugMessageControl(GL_DONT_CARE, GL_DONT_CARE, GL_DEBUG_SEVERITY_NOTIFICATION, 0, nullptr, GL_FALSE);
 
     SDL_GL_GetDrawableSize(m_window, &m_width, &m_height);
+    Object* mainCameraObject = m_scene.makeObject();
+    m_scene.mainCamera = m_scene.components.cameras.emplace_back(std::make_unique<Camera>(*mainCameraObject)).get();
+    m_scene.mainCamera->aspectRatio = float(m_width) / float(m_height);
+    m_scene.mainCamera->object.transform.position = glm::vec3{ 0.0, 0.0, 10.0 };
+    m_scene.components.scripts.push_back(makeScript<FPSCameraScript>(*mainCameraObject));
 
-    m_camera.aspectRatio = float(m_width) / float(m_height);
-    m_camera.transform.position = glm::vec3{ 0.0, 0.0, 10.0 };
+    Object* movingObjectGeneratorObject = m_scene.makeObject();
+    m_scene.components.scripts.push_back(makeScript<MovingObjectGeneratorScript>(*movingObjectGeneratorObject));
 
-    Transform land;
-    land.position.y -= 10.0;
+    Object* landObject = m_scene.objects.emplace_back(std::make_unique<Object>()).get();
+    landObject->transform.position.y -= 10.0;
+
     GLuint vertexBufferLand;
     glCreateBuffers(1, &vertexBufferLand);
     Vertex landPoints[]{
@@ -147,10 +344,6 @@ public:
     glCreateBuffers(1, &elementBufferLand);
     uint32_t indicesLand[]{ 0, 2, 1, 0, 3, 2 };
     glNamedBufferData(elementBufferLand, sizeof(indicesLand), indicesLand, GL_STATIC_DRAW);
-
-    Transform objects[3]{};
-    objects[1].position.x -= 10.0;
-    objects[2].position.x += 10.0;
 
     GLuint vertexBuffer;
     glCreateBuffers(1, &vertexBuffer);
@@ -167,8 +360,8 @@ public:
     glNamedBufferData(elementBuffer, sizeof(indices), indices, GL_STATIC_DRAW);
 
     struct ViewProjectionMatrix {
-      glm::mat4x4 view;
-      glm::mat4x4 projection;
+      glm::mat4x4 viewMatrix4;
+      glm::mat4x4 projectionMatrix4;
     } cameraViewProjection;
 
     struct TransformMatrices {
@@ -267,7 +460,7 @@ public:
 
     SDL_bool relativeMouseMode = SDL_TRUE;
     SDL_SetRelativeMouseMode(relativeMouseMode);
-    double time = 0.0;
+    m_time.timeSinceStart = 0.0;
     uint64_t ticksLast = SDL_GetPerformanceCounter();
     uint64_t frequency = SDL_GetPerformanceFrequency();
     while (true) {
@@ -278,8 +471,8 @@ public:
       uint64_t ticksNow = SDL_GetPerformanceCounter();
       uint64_t ticksDiff = ticksNow - ticksLast;
       double delta = double(ticksDiff) / double(frequency);
-      time += delta;
-      float dt = float(delta);
+      m_time.timeSinceStart += delta;
+      m_time.dt = float(delta);
       ticksLast = ticksNow;
 
       // Update
@@ -289,37 +482,16 @@ public:
           SDL_SetRelativeMouseMode(relativeMouseMode);
         }
 
-        float speed = 10.0;
-        if (m_input.keyDown[SDL_SCANCODE_LSHIFT]) {
-          speed = 20.0;
+        for (auto& script : m_scene.components.pendingScripts) {
+          m_scene.components.scripts.push_back(std::move(script));
         }
-
-        if (m_input.keyDown[SDL_SCANCODE_W]) {
-          m_camera.transform.position += m_camera.transform.forward() * speed * float(dt);
+        m_scene.components.pendingScripts.clear();
+        for (auto& script : m_scene.components.scripts) {
+          script->init();
         }
-        if (m_input.keyDown[SDL_SCANCODE_S]) {
-          m_camera.transform.position -= m_camera.transform.forward() * speed * float(dt);
+        for (auto& script : m_scene.components.scripts) {
+          script->update();
         }
-        if (m_input.keyDown[SDL_SCANCODE_D]) {
-          m_camera.transform.position += m_camera.transform.right() * speed * float(dt);
-        }
-        if (m_input.keyDown[SDL_SCANCODE_A]) {
-          m_camera.transform.position -= m_camera.transform.right() * speed * float(dt);
-        }
-        if (m_input.keyDown[SDL_SCANCODE_Q]) {
-          m_camera.transform.position += m_camera.transform.up() * speed * float(dt);
-        }
-        if (m_input.keyDown[SDL_SCANCODE_Z]) {
-          m_camera.transform.position -= m_camera.transform.up() * speed * float(dt);
-        }
-        m_camera.transform.rotateGlobal(glm::vec3(0.0f, 1.0f, 0.0f), -float(dt) * m_input.mousedx);
-        m_camera.transform.rotateLocal(glm::vec3(1.0f, 0.0f, 0.0f), -float(dt) * m_input.mousedy);
-
-        objects[0].rotateLocal(objects[0].forward(), dt);
-        objects[1].rotateLocal(objects[1].forward(), 0.5f * dt);
-        objects[1].rotateLocal(objects[1].up(), 0.5f * dt);
-        objects[2].rotateLocal(objects[2].forward(), -0.5f * dt);
-        objects[2].rotateLocal(objects[2].up(), -0.5f * dt);
       }
 
       glEnable(GL_DEPTH_TEST);
@@ -332,8 +504,8 @@ public:
       glVertexArrayElementBuffer(vertexArray, elementBufferLand);
 
       {
-        cameraViewProjection.view = m_camera.view();
-        cameraViewProjection.projection = m_camera.projection();
+        cameraViewProjection.viewMatrix4 = m_scene.mainCamera->viewMatrix4();
+        cameraViewProjection.projectionMatrix4 = m_scene.mainCamera->projectionMatrix4();
         {
           char* buf = (char*)glMapNamedBuffer(uniformBuffers[0], GL_WRITE_ONLY);
           memcpy(buf, &cameraViewProjection, sizeof(cameraViewProjection));
@@ -343,7 +515,7 @@ public:
       glBindBufferBase(GL_UNIFORM_BUFFER, 0, uniformBuffers[0]);
 
       {
-        objectTransforms.transforms[0] = land.transform();
+        objectTransforms.transforms[0] = landObject->transform.asMatrix4();
         {
           char* buf = (char*)glMapNamedBuffer(uniformBuffers[1], GL_WRITE_ONLY);
           memcpy(buf, &objectTransforms, sizeof(glm::mat4x4) * 1);
@@ -356,18 +528,24 @@ public:
       glVertexArrayVertexBuffer(vertexArray, binding(0), vertexBuffer, 0, 8 * sizeof(float));
       glVertexArrayElementBuffer(vertexArray, elementBuffer);
 
+      std::vector<Object*> movingObjects;
+      for (auto& script : m_scene.components.scripts) {
+        if (dynamic_cast<MovingObjectScript*>(script.get()) && movingObjects.size() < 100) {
+          movingObjects.push_back(&script->object);
+        }
+      }
       {
-        objectTransforms.transforms[0] = objects[0].transform();
-        objectTransforms.transforms[1] = objects[1].transform();
-        objectTransforms.transforms[2] = objects[2].transform();
+        for (size_t i = 0; i < movingObjects.size(); i++) {
+          objectTransforms.transforms[i] = movingObjects[i]->transform.asMatrix4();
+        }
         {
           char* buf = (char*)glMapNamedBuffer(uniformBuffers[1], GL_WRITE_ONLY);
-          memcpy(buf, &objectTransforms, sizeof(glm::mat4x4) * 3);
+          memcpy(buf, &objectTransforms, sizeof(glm::mat4x4) * movingObjects.size());
           glUnmapNamedBuffer(uniformBuffers[1]);
         }
       }
       glBindBufferBase(GL_UNIFORM_BUFFER, 1, uniformBuffers[1]);
-      glDrawElementsInstanced(GL_TRIANGLES, 3, GL_UNSIGNED_INT, nullptr, 3);
+      glDrawElementsInstanced(GL_TRIANGLES, 3, GL_UNSIGNED_INT, nullptr, movingObjects.size());
 
       SDL_GL_SwapWindow(m_window);
     }
@@ -424,15 +602,10 @@ private:
   bool m_quit = false;
   bool m_shutdownCalled = false;
   int m_width, m_height;
-  Camera m_camera;
-  struct Input {
-    bool keyDown[SDL_NUM_SCANCODES]{};
-    bool prevKeyDown[SDL_NUM_SCANCODES]{};
-    bool keyPressed[SDL_NUM_SCANCODES]{};
-    bool keyReleased[SDL_NUM_SCANCODES]{};
-    float mousedx = 0.0;
-    float mousedy = 0.0;
-  } m_input;
+  Input m_input;
+  Time m_time;
+  Scene m_scene;
+  Random m_random;
 };
 
 int main(int, char**) {

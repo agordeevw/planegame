@@ -7,10 +7,7 @@ find_package(SDL2 REQUIRED)
 set(SDL2_image_DIR "${CMAKE_SOURCE_DIR}/external/SDL2_image-2.6.2/cmake")
 find_package(SDL2_image REQUIRED)
 
-file(GLOB_RECURSE PROJECT_SOURCES
-    glad/glad.h
-    glad/glad.c
-    Main.cpp)
+file(GLOB_RECURSE PROJECT_SOURCES *.cpp **/*.cpp *.h **/*.h *.c **/*.c)
 
 add_executable(${PROJECT_NAME} ${PROJECT_SOURCES})
 
@@ -19,7 +16,8 @@ target_link_libraries(${PROJECT_NAME}
 
 target_include_directories(${PROJECT_NAME}
     PUBLIC
-        ${CMAKE_CURRENT_SOURCE_DIR})
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/planegame/Renderer)
 
 source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${PROJECT_SOURCES})
 
