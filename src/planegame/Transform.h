@@ -34,9 +34,14 @@ struct Transform {
   }
 
   glm::mat4x4 asMatrix4() const {
-    return glm::translate(glm::identity<glm::mat4>(), position) * glm::toMat4(rotation);
+    glm::mat4x4 ret = glm::identity<glm::mat4>();
+    if (parentTransform)
+      ret = parentTransform->asMatrix4();
+    ret = glm::translate(ret, position) * glm::toMat4(rotation);
+    return ret;
   }
 
   glm::vec3 position = glm::zero<glm::vec3>();
   glm::quat rotation = glm::identity<glm::quat>();
+  Transform* parentTransform = nullptr;
 };

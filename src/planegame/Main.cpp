@@ -48,17 +48,26 @@ class Object {
 public:
   Object(Scene& scene) : m_scene(scene) {}
 
+  void destroy() {
+    taggedDestroyed = true;
+    for (auto* child : m_children) {
+      child->destroy();
+    }
+  }
+
   void detachFromParent() {
     if (m_parent) {
       auto it = std::remove_if(m_parent->m_children.begin(), m_parent->m_children.end(), [this](Object* o) { return this == o; });
       m_children.erase(it, m_parent->m_children.end());
       m_parent = nullptr;
+      transform.parentTransform = nullptr;
     }
   }
 
   bool addChild(Object* object) {
     if (object->m_parent == nullptr && std::find(m_children.begin(), m_children.end(), object) == std::end(m_children)) {
       object->m_parent = this;
+      object->transform.parentTransform = &transform;
       m_children.push_back(object);
       return true;
     }
@@ -103,6 +112,9 @@ public:
   Transform transform;
 
 private:
+  friend class Scene;
+
+  bool taggedDestroyed = false;
   Scene& m_scene;
   std::vector<Component*> m_components;
   Object* m_parent = nullptr;
@@ -115,8 +127,17 @@ public:
     : object(object), transform(object.transform) {}
   virtual ~Component() = default;
 
+  void destroy() {
+    taggedDestroyed = true;
+  }
+
   Object& object;
   Transform& transform;
+
+private:
+  friend class Scene;
+
+  bool taggedDestroyed = false;
 };
 
 class Camera final : public Component {
@@ -195,6 +216,30 @@ public:
     return nullptr;
   }
 
+  void destroyObjects() {
+    for (auto& object : objects) {
+      if (object->taggedDestroyed) {
+        for (auto& component : object->m_components) {
+          component->taggedDestroyed = true;
+        }
+      }
+    }
+
+    auto deleteTagged = [](auto& v) {
+      for (auto& component : v) {
+        if (component->taggedDestroyed) {
+          component.reset();
+        }
+      }
+      v.erase(std::remove_if(v.begin(), v.end(), [](const auto& ptr) { return ptr.get() == nullptr; }), v.end());
+    };
+
+    deleteTagged(components.cameras);
+    deleteTagged(scripts.activeScripts);
+
+    deleteTagged(objects);
+  }
+
   std::vector<std::unique_ptr<Object>> objects;
   struct Components {
     std::vector<std::unique_ptr<Camera>> cameras;
@@ -251,9 +296,9 @@ public:
     m_chasedObject = &scene().getMainCamera()->object;
     m_forwardRotationSpeed = random().next(-1.0f, 1.0f);
     m_rightRotationSpeed = random().next(-1.0f, 1.0f);
-    transform.position.x += random().next(-100.0f, 100.0f);
-    transform.position.y += 0.1f * random().next(-100.0f, 100.0f);
-    transform.position.z += random().next(-100.0f, 100.0f);
+    transform.position.x += random().next(-20.0f, 20.0f);
+    transform.position.y += 0.1f * random().next(-10.0f, 10.0f);
+    transform.position.z += random().next(-20.0f, 20.0f);
   }
 
   void update() override {
@@ -282,8 +327,25 @@ public:
     if (input().keyPressed[SDL_SCANCODE_SPACE]) {
       Object* newObject = scene().makeObject();
       newObject->addComponent<MovingObjectScript>();
+      generatedObjects.push_back(newObject);
+      Object* newObjectParent = scene().makeObject();
+      newObjectParent->addComponent<MovingObjectScript>();
+      newObjectParent->addChild(newObject);
+      generatedObjects.push_back(newObjectParent);
+    }
+    if (input().keyPressed[SDL_SCANCODE_P]) {
+      for (Object*& object : generatedObjects) {
+        if (random().next(0.0f, 1.0f) > 0.5f) {
+          object->destroy();
+          object = nullptr;
+        }
+      }
+      generatedObjects.erase(std::remove_if(generatedObjects.begin(), generatedObjects.end(), [](auto& ptr) { return ptr == nullptr; }), generatedObjects.end());
     }
   }
+
+private:
+  std::vector<Object*> generatedObjects;
 };
 
 class Application {
@@ -358,13 +420,14 @@ public:
     mainCamera->aspectRatio = float(m_width) / float(m_height);
     mainCamera->object.transform.position = glm::vec3{ 0.0, 0.0, 10.0 };
     mainCamera->isMain = true;
+    mainCamera->fov = glm::radians(100.0f);
     mainCameraObject->addComponent<FPSCameraScript>();
 
     Object* movingObjectGeneratorObject = m_scene.makeObject();
     movingObjectGeneratorObject->addComponent<MovingObjectGeneratorScript>();
 
     Object* landObject = m_scene.makeObject();
-    landObject->transform.position.y -= 10.0;
+    landObject->transform.position = { 0.0f, -10.0f, 0.0f };
 
     GLuint vertexBufferLand;
     glCreateBuffers(1, &vertexBufferLand);
@@ -425,6 +488,8 @@ public:
 
     char buffer[1024];
 
+    GLuint programV = glCreateProgram();
+    glProgramParameteri(programV, GL_PROGRAM_SEPARABLE, GL_TRUE);
     GLuint shaderV = glCreateShader(GL_VERTEX_SHADER);
     {
       const char* source = "#version 460\n"
@@ -452,7 +517,11 @@ public:
       if (buffer[0])
         SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "vertex shader compile error", buffer, m_window);
     }
+    glAttachShader(programV, shaderV);
+    glLinkProgram(programV);
 
+    GLuint programF = glCreateProgram();
+    glProgramParameteri(programF, GL_PROGRAM_SEPARABLE, GL_TRUE);
     GLuint shaderF = glCreateShader(GL_FRAGMENT_SHADER);
     {
       const char* source = "#version 460\n"
@@ -472,25 +541,18 @@ public:
       if (buffer[0])
         SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "fragment shader compile error", buffer, m_window);
     }
+    glAttachShader(programF, shaderF);
+    glLinkProgram(programF);
 
-    GLuint program = glCreateProgram();
-    glProgramParameteri(program, GL_PROGRAM_SEPARABLE, GL_TRUE);
-    glAttachShader(program, shaderV);
-    glAttachShader(program, shaderF);
-    glLinkProgram(program);
-    glGetProgramInfoLog(program, sizeof(buffer), nullptr, buffer);
-    if (buffer[0])
-      SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "shader link error", buffer, m_window);
-
-    GLuint programUniformBlockIndex1 = glGetUniformBlockIndex(program, "ViewProjection");
-    glUniformBlockBinding(program, programUniformBlockIndex1, 0);
-    GLuint programUniformBlockIndex2 = glGetUniformBlockIndex(program, "Transform");
-    glUniformBlockBinding(program, programUniformBlockIndex2, 1);
+    GLuint programUniformBlockIndex1 = glGetUniformBlockIndex(programV, "ViewProjection");
+    glUniformBlockBinding(programV, programUniformBlockIndex1, 0);
+    GLuint programUniformBlockIndex2 = glGetUniformBlockIndex(programV, "Transform");
+    glUniformBlockBinding(programV, programUniformBlockIndex2, 1);
 
     GLuint pipeline;
     glCreateProgramPipelines(1, &pipeline);
-
-    glUseProgramStages(pipeline, GL_ALL_SHADER_BITS, program);
+    glUseProgramStages(pipeline, GL_VERTEX_SHADER_BIT, programV);
+    glUseProgramStages(pipeline, GL_FRAGMENT_SHADER_BIT, programF);
 
     SDL_ShowWindow(m_window);
 
@@ -518,17 +580,24 @@ public:
           SDL_SetRelativeMouseMode(relativeMouseMode);
         }
 
+        for (auto& script : m_scene.scripts.activeScripts) {
+          script->update();
+        }
         for (auto& script : m_scene.scripts.pendingScripts) {
           script->initialize();
           m_scene.scripts.activeScripts.push_back(std::move(script));
         }
         m_scene.scripts.pendingScripts.clear();
-        for (auto& script : m_scene.scripts.activeScripts) {
-          script->update();
-        }
+
+        m_scene.destroyObjects();
       }
 
       // Render
+
+      // For each material:
+      //   for each submesh with this material:
+      //     bind submesh vertex buffers and element buffer
+      //     draw elements (instanced)
 
       glEnable(GL_DEPTH_TEST);
       glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
