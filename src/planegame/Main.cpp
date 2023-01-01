@@ -5,6 +5,7 @@
 #include <planegame/Renderer/glad/glad.h>
 
 #include <memory>
+#include <optional>
 #include <random>
 #include <vector>
 
@@ -41,10 +42,11 @@ private:
 };
 
 class Component;
+class Scene;
 
 class Object {
 public:
-  Transform transform;
+  Object(Scene& scene) : m_scene(scene) {}
 
   void detachFromParent() {
     if (m_parent) {
@@ -71,16 +73,9 @@ public:
     return m_children;
   }
 
-  bool addComponent(Component* component) {
-    if (std::find(m_components.begin(), m_components.end(), component) == std::end(m_components)) {
-      m_components.push_back(component);
-      return true;
-    }
-    return false;
-  }
-
   template <class T>
   T* getComponent() const {
+    static_assert(std::is_final_v<T>, "");
     T* ret = nullptr;
     for (Component* component : m_components) {
       if (ret = dynamic_cast<T*>(component))
@@ -89,7 +84,26 @@ public:
     return ret;
   }
 
+  template <class T>
+  T* addComponent() {
+    static_assert(std::is_base_of_v<Component, T>);
+    static_assert(std::is_final_v<T>);
+    std::unique_ptr<T> component;
+    component = std::make_unique<T>(*this);
+    T* ret = component.get();
+    m_components.push_back(ret);
+    m_scene.registerComponent(std::move(component));
+    return ret;
+  }
+
+  Scene& scene() {
+    return m_scene;
+  }
+
+  Transform transform;
+
 private:
+  Scene& m_scene;
   std::vector<Component*> m_components;
   Object* m_parent = nullptr;
   std::vector<Object*> m_children;
@@ -98,16 +112,15 @@ private:
 class Component {
 public:
   Component(Object& object)
-    : object(object), transform(object.transform) {
-    object.addComponent(this);
-  }
+    : object(object), transform(object.transform) {}
   virtual ~Component() = default;
 
   Object& object;
   Transform& transform;
 };
 
-struct Camera final : public Component {
+class Camera final : public Component {
+public:
   Camera(Object& object) : Component(object) {}
 
   glm::mat4x4 viewMatrix4() const {
@@ -120,55 +133,77 @@ struct Camera final : public Component {
 
   float fov = glm::radians(90.0f);
   float aspectRatio = 1.0f;
+  bool isMain = true;
 };
 
 class Scene;
 
+struct ScriptContext {
+  Scene* scene;
+  const Input* input;
+  const Time* time;
+  Random* random;
+};
+
 class Script : public Component {
 public:
-  Script(Scene& scene, const Input& input, const Time& time, Random& random, Object& object)
-    : scene(scene), input(input), time(time), random(random), Component(object) {}
+  Script(Object& object)
+    : Component(object) {}
   virtual ~Script() = default;
 
-  void init() {
-    if (!isInitialized) {
-      initialize();
-      isInitialized = true;
-    }
-  }
+  virtual void initialize() {}
   virtual void update() = 0;
 
-protected:
-  virtual void initialize() {}
+  Scene& scene() { return *m_context.scene; }
+  const Input& input() { return *m_context.input; }
+  const Time& time() { return *m_context.time; }
+  Random& random() { return *m_context.random; }
 
-  template <class T>
-  T* makeScript(Object& object) {
-    auto ptr = std::make_unique<T>(scene, input, time, random, object);
-    T* ret = ptr.get();
-    scene.components.pendingScripts.push_back(std::move(ptr));
-    return ret;
-  }
+private:
+  friend class Scene;
 
-  Scene& scene;
-  const Input& input;
-  const Time& time;
-  Random& random;
-  bool isInitialized = false;
+  ScriptContext m_context;
 };
 
 class Scene {
 public:
   Object* makeObject() {
-    return objects.emplace_back(std::make_unique<Object>()).get();
+    return objects.emplace_back(std::make_unique<Object>(*this)).get();
+  }
+
+  template <class T>
+  void registerComponent(std::unique_ptr<T> component) {
+    static_assert(std::is_base_of_v<Component, T>);
+    if constexpr (std::is_base_of_v<Script, T>) {
+      Script* baseScript = component.get();
+      baseScript->m_context = scriptContext;
+      scripts.pendingScripts.push_back(std::move(component));
+    }
+    else if constexpr (std::is_same_v<T, Camera>) {
+      components.cameras.emplace_back(std::move(component));
+    }
+    else {
+      static_assert(false, "component type not handled");
+    }
+  }
+
+  Camera* getMainCamera() {
+    for (auto& camera : components.cameras) {
+      if (camera->isMain)
+        return camera.get();
+    }
+    return nullptr;
   }
 
   std::vector<std::unique_ptr<Object>> objects;
-  Camera* mainCamera = nullptr;
   struct Components {
     std::vector<std::unique_ptr<Camera>> cameras;
-    std::vector<std::unique_ptr<Script>> scripts;
-    std::vector<std::unique_ptr<Script>> pendingScripts;
   } components;
+  struct Scripts {
+    std::vector<std::unique_ptr<Script>> activeScripts;
+    std::vector<std::unique_ptr<Script>> pendingScripts;
+  } scripts;
+  ScriptContext scriptContext;
 };
 
 class FPSCameraScript final : public Script {
@@ -179,30 +214,30 @@ public:
     Transform& transform = object.transform;
 
     float speed = m_speed;
-    if (input.keyDown[SDL_SCANCODE_LSHIFT]) {
+    if (input().keyDown[SDL_SCANCODE_LSHIFT]) {
       speed *= 2.0;
     }
 
-    if (input.keyDown[SDL_SCANCODE_W]) {
-      transform.position += transform.forward() * speed * time.dt;
+    if (input().keyDown[SDL_SCANCODE_W]) {
+      transform.position += transform.forward() * speed * time().dt;
     }
-    if (input.keyDown[SDL_SCANCODE_S]) {
-      transform.position -= transform.forward() * speed * time.dt;
+    if (input().keyDown[SDL_SCANCODE_S]) {
+      transform.position -= transform.forward() * speed * time().dt;
     }
-    if (input.keyDown[SDL_SCANCODE_D]) {
-      transform.position += transform.right() * speed * time.dt;
+    if (input().keyDown[SDL_SCANCODE_D]) {
+      transform.position += transform.right() * speed * time().dt;
     }
-    if (input.keyDown[SDL_SCANCODE_A]) {
-      transform.position -= transform.right() * speed * time.dt;
+    if (input().keyDown[SDL_SCANCODE_A]) {
+      transform.position -= transform.right() * speed * time().dt;
     }
-    if (input.keyDown[SDL_SCANCODE_Q]) {
-      transform.position += transform.up() * speed * time.dt;
+    if (input().keyDown[SDL_SCANCODE_Q]) {
+      transform.position += transform.up() * speed * time().dt;
     }
-    if (input.keyDown[SDL_SCANCODE_Z]) {
-      transform.position -= transform.up() * speed * time.dt;
+    if (input().keyDown[SDL_SCANCODE_Z]) {
+      transform.position -= transform.up() * speed * time().dt;
     }
-    transform.rotateGlobal(glm::vec3(0.0f, 1.0f, 0.0f), -time.dt * input.mousedx);
-    transform.rotateLocal(glm::vec3(1.0f, 0.0f, 0.0f), -time.dt * input.mousedy);
+    transform.rotateGlobal(glm::vec3(0.0f, 1.0f, 0.0f), -time().dt * input().mousedx);
+    transform.rotateLocal(glm::vec3(1.0f, 0.0f, 0.0f), -time().dt * input().mousedy);
   }
 
   float m_speed = 10.0;
@@ -213,24 +248,24 @@ public:
   using Script::Script;
 
   void initialize() override {
-    m_chasedObject = &scene.mainCamera->object;
-    m_forwardRotationSpeed = random.next(-1.0f, 1.0f);
-    m_rightRotationSpeed = random.next(-1.0f, 1.0f);
-    transform.position.x += random.next(-100.0f, 100.0f);
-    transform.position.y += 0.1f * random.next(-100.0f, 100.0f);
-    transform.position.z += random.next(-100.0f, 100.0f);
+    m_chasedObject = &scene().getMainCamera()->object;
+    m_forwardRotationSpeed = random().next(-1.0f, 1.0f);
+    m_rightRotationSpeed = random().next(-1.0f, 1.0f);
+    transform.position.x += random().next(-100.0f, 100.0f);
+    transform.position.y += 0.1f * random().next(-100.0f, 100.0f);
+    transform.position.z += random().next(-100.0f, 100.0f);
   }
 
   void update() override {
-    transform.rotateLocal(transform.forward(), m_forwardRotationSpeed * time.dt);
-    transform.rotateLocal(transform.right(), m_rightRotationSpeed * time.dt);
+    transform.rotateLocal(transform.forward(), m_forwardRotationSpeed * time().dt);
+    transform.rotateLocal(transform.right(), m_rightRotationSpeed * time().dt);
     glm::vec3 delta = m_chasedObject->transform.position - transform.position;
     glm::vec3 dir = glm::normalize(delta);
-    if (input.keyPressed[SDL_SCANCODE_E]) {
+    if (input().keyPressed[SDL_SCANCODE_E]) {
       dir *= -10000.0f * (1.0f / (1.0f + glm::l2Norm(delta)));
     }
-    m_velocity += dir * time.dt;
-    transform.position += m_velocity * time.dt;
+    m_velocity += dir * time().dt;
+    transform.position += m_velocity * time().dt;
   }
 
   Object* m_chasedObject = nullptr;
@@ -244,20 +279,15 @@ public:
   using Script::Script;
 
   void update() override {
-    if (input.keyPressed[SDL_SCANCODE_SPACE]) {
-      Object* newObject = scene.makeObject();
-      MovingObjectScript* script = makeScript<MovingObjectScript>(*newObject);
+    if (input().keyPressed[SDL_SCANCODE_SPACE]) {
+      Object* newObject = scene().makeObject();
+      newObject->addComponent<MovingObjectScript>();
     }
   }
 };
 
 class Application {
 public:
-  template <class T, class... Args>
-  std::unique_ptr<T> makeScript(Args&&... args) {
-    return std::make_unique<T>(m_scene, m_input, m_time, m_random, std::forward<Args>(args)...);
-  }
-
   ~Application() {
     shutDown();
   }
@@ -317,17 +347,23 @@ public:
     glDebugMessageCallback(glDebugCallback, this);
     glDebugMessageControl(GL_DONT_CARE, GL_DONT_CARE, GL_DEBUG_SEVERITY_NOTIFICATION, 0, nullptr, GL_FALSE);
 
+    m_scene.scriptContext.input = &m_input;
+    m_scene.scriptContext.random = &m_random;
+    m_scene.scriptContext.time = &m_time;
+    m_scene.scriptContext.scene = &m_scene;
+
     SDL_GL_GetDrawableSize(m_window, &m_width, &m_height);
     Object* mainCameraObject = m_scene.makeObject();
-    m_scene.mainCamera = m_scene.components.cameras.emplace_back(std::make_unique<Camera>(*mainCameraObject)).get();
-    m_scene.mainCamera->aspectRatio = float(m_width) / float(m_height);
-    m_scene.mainCamera->object.transform.position = glm::vec3{ 0.0, 0.0, 10.0 };
-    m_scene.components.scripts.push_back(makeScript<FPSCameraScript>(*mainCameraObject));
+    Camera* mainCamera = mainCameraObject->addComponent<Camera>();
+    mainCamera->aspectRatio = float(m_width) / float(m_height);
+    mainCamera->object.transform.position = glm::vec3{ 0.0, 0.0, 10.0 };
+    mainCamera->isMain = true;
+    mainCameraObject->addComponent<FPSCameraScript>();
 
     Object* movingObjectGeneratorObject = m_scene.makeObject();
-    m_scene.components.scripts.push_back(makeScript<MovingObjectGeneratorScript>(*movingObjectGeneratorObject));
+    movingObjectGeneratorObject->addComponent<MovingObjectGeneratorScript>();
 
-    Object* landObject = m_scene.objects.emplace_back(std::make_unique<Object>()).get();
+    Object* landObject = m_scene.makeObject();
     landObject->transform.position.y -= 10.0;
 
     GLuint vertexBufferLand;
@@ -475,24 +511,24 @@ public:
       m_time.dt = float(delta);
       ticksLast = ticksNow;
 
-      // Update
+      // Update components
       {
         if (m_input.keyDown[SDL_SCANCODE_LCTRL] && m_input.keyPressed[SDL_SCANCODE_C]) {
           relativeMouseMode = relativeMouseMode == SDL_TRUE ? SDL_FALSE : SDL_TRUE;
           SDL_SetRelativeMouseMode(relativeMouseMode);
         }
 
-        for (auto& script : m_scene.components.pendingScripts) {
-          m_scene.components.scripts.push_back(std::move(script));
+        for (auto& script : m_scene.scripts.pendingScripts) {
+          script->initialize();
+          m_scene.scripts.activeScripts.push_back(std::move(script));
         }
-        m_scene.components.pendingScripts.clear();
-        for (auto& script : m_scene.components.scripts) {
-          script->init();
-        }
-        for (auto& script : m_scene.components.scripts) {
+        m_scene.scripts.pendingScripts.clear();
+        for (auto& script : m_scene.scripts.activeScripts) {
           script->update();
         }
       }
+
+      // Render
 
       glEnable(GL_DEPTH_TEST);
       glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -504,8 +540,8 @@ public:
       glVertexArrayElementBuffer(vertexArray, elementBufferLand);
 
       {
-        cameraViewProjection.viewMatrix4 = m_scene.mainCamera->viewMatrix4();
-        cameraViewProjection.projectionMatrix4 = m_scene.mainCamera->projectionMatrix4();
+        cameraViewProjection.viewMatrix4 = m_scene.getMainCamera()->viewMatrix4();
+        cameraViewProjection.projectionMatrix4 = m_scene.getMainCamera()->projectionMatrix4();
         {
           char* buf = (char*)glMapNamedBuffer(uniformBuffers[0], GL_WRITE_ONLY);
           memcpy(buf, &cameraViewProjection, sizeof(cameraViewProjection));
@@ -529,7 +565,7 @@ public:
       glVertexArrayElementBuffer(vertexArray, elementBuffer);
 
       std::vector<Object*> movingObjects;
-      for (auto& script : m_scene.components.scripts) {
+      for (auto& script : m_scene.scripts.activeScripts) {
         if (dynamic_cast<MovingObjectScript*>(script.get()) && movingObjects.size() < 100) {
           movingObjects.push_back(&script->object);
         }
@@ -545,7 +581,7 @@ public:
         }
       }
       glBindBufferBase(GL_UNIFORM_BUFFER, 1, uniformBuffers[1]);
-      glDrawElementsInstanced(GL_TRIANGLES, 3, GL_UNSIGNED_INT, nullptr, movingObjects.size());
+      glDrawElementsInstanced(GL_TRIANGLES, 3, GL_UNSIGNED_INT, nullptr, int(movingObjects.size()));
 
       SDL_GL_SwapWindow(m_window);
     }
