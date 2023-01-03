@@ -7,6 +7,7 @@
 #include <memory>
 #include <optional>
 #include <random>
+#include <unordered_map>
 #include <vector>
 
 struct Vertex {
@@ -184,6 +185,113 @@ private:
   friend class Scene;
 
   ScriptContext m_context;
+};
+
+struct Mesh {
+  struct VertexAttribute {
+    enum class Type {
+      Unknown,
+      Position,
+      Normal,
+      Tangent,
+      Color,
+      UV,
+    };
+
+    enum class Format {
+      Unknown,
+      f16,
+      f32,
+    };
+
+    Type type = Type::Unknown;
+    Format format = Format::Unknown;
+    int dimension = -1;
+    int binding = 0;
+  };
+
+  struct SubMesh {
+    uint32_t indexStart = 0;
+    uint32_t indexCount = 0;
+    // bounds
+  };
+
+  enum class IndexFormat {
+    Unknown,
+    u16,
+    u32,
+  };
+
+  std::vector<SubMesh> submeshes;
+  std::vector<VertexAttribute> vertexAttributes;
+  uint32_t vertexCount = 0;
+  IndexFormat indexFormat = IndexFormat::Unknown;
+  uint32_t indexCount = 0;
+};
+
+struct Shader {
+  struct Options {
+    const char* vertexSource = nullptr;
+    const char* fragmentSource = nullptr;
+  };
+
+  void initialize(const Options& options) {
+    programV = glCreateShaderProgramv(GL_VERTEX_SHADER, 1, &options.vertexSource);
+    checkLinkStatus(programV);
+
+    programF = glCreateShaderProgramv(GL_FRAGMENT_SHADER, 1, &options.fragmentSource);
+    checkLinkStatus(programF);
+
+    glCreateProgramPipelines(1, &programPipeline);
+    glUseProgramStages(programPipeline, GL_VERTEX_SHADER_BIT, programV);
+    glUseProgramStages(programPipeline, GL_FRAGMENT_SHADER_BIT, programF);
+
+    listProgramUniforms(programV);
+    listProgramUniforms(programF);
+  }
+
+  GLuint programV = -1;
+  GLuint programF = -1;
+  GLuint programPipeline = -1;
+
+private:
+  void checkLinkStatus(GLuint program) {
+    GLint linkStatus;
+    glGetProgramiv(program, GL_LINK_STATUS, &linkStatus);
+    if (linkStatus == GL_FALSE) {
+      char buffer[1024];
+      glGetProgramInfoLog(program, sizeof(buffer), nullptr, buffer);
+      printf("fs: %s\n", buffer);
+    }
+  }
+
+  void listProgramUniforms(GLuint program) {
+    char buffer[1024];
+    GLint uniformCount = 0;
+    glGetProgramiv(program, GL_ACTIVE_UNIFORMS, &uniformCount);
+    if (uniformCount != 0) {
+      GLint maxNameLength;
+      glGetProgramiv(program, GL_ACTIVE_UNIFORM_MAX_LENGTH, &maxNameLength);
+      auto uniformName = std::make_unique<char[]>(maxNameLength);
+      for (GLint i = 0; i < uniformCount; i++) {
+        GLint size;
+        GLenum type;
+        glGetActiveUniform(program, i, sizeof(buffer), nullptr, &size, &type, buffer);
+        printf("%s: size(%d) type(%d)\n", buffer, size, type);
+      }
+    }
+  }
+};
+
+struct Material {
+  Shader* shader;
+  // editing values for uniforms here
+};
+
+class MeshRenderer : public Component {
+public:
+  Mesh* mesh;
+  std::vector<Material*> materials;
 };
 
 class Scene {
@@ -467,10 +575,11 @@ public:
       glm::mat4x4 transforms[128];
     } objectTransforms;
 
-    GLuint uniformBuffers[2];
-    glCreateBuffers(2, uniformBuffers);
+    GLuint uniformBuffers[3];
+    glCreateBuffers(3, uniformBuffers);
     glNamedBufferData(uniformBuffers[0], sizeof(ViewProjectionMatrix), nullptr, GL_DYNAMIC_DRAW);
     glNamedBufferData(uniformBuffers[1], sizeof(TransformMatrices), nullptr, GL_DYNAMIC_DRAW);
+    glNamedBufferData(uniformBuffers[2], 64 * 1024, nullptr, GL_DYNAMIC_DRAW);
 
     GLuint vertexArray;
     glCreateVertexArrays(1, &vertexArray);
@@ -486,73 +595,49 @@ public:
       glVertexArrayAttribBinding(vertexArray, attrib(2), binding(0));
     }
 
-    char buffer[1024];
-
-    GLuint programV = glCreateProgram();
-    glProgramParameteri(programV, GL_PROGRAM_SEPARABLE, GL_TRUE);
-    GLuint shaderV = glCreateShader(GL_VERTEX_SHADER);
+    Shader shader;
     {
-      const char* source = "#version 460\n"
-                           "layout (location = 0) in vec3 inPosition;\n"
-                           "layout (location = 1) in vec3 inColor;\n"
-                           "layout (location = 2) in vec2 inUV;\n"
-                           "layout (location = 0) out vec3 position;\n"
-                           "layout (location = 1) out vec3 color;\n"
-                           "out gl_PerVertex {\n"
-                           "  vec4 gl_Position;\n"
-                           "  float gl_PointSize;\n"
-                           "  float gl_ClipDistance[];\n"
-                           "};\n"
-                           "layout(binding = 0) uniform ViewProjection { mat4 view; mat4 projection; };\n"
-                           "layout(binding = 1) uniform Transform { mat4 transforms[128]; };\n"
-                           "void main() {\n"
-                           "  gl_Position = projection * view * transforms[gl_InstanceID] * vec4(inPosition, 1.0);\n"
-                           "  position = (transforms[gl_InstanceID] * vec4(inPosition, 1.0)).xyz;\n"
-                           "  color = inColor.rgb;\n"
-                           "}";
-
-      glShaderSource(shaderV, 1, &source, nullptr);
-      glCompileShader(shaderV);
-      glGetShaderInfoLog(shaderV, sizeof(buffer), nullptr, buffer);
-      if (buffer[0])
-        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "vertex shader compile error", buffer, m_window);
+      Shader::Options options{};
+      options.vertexSource = "#version 460\n"
+                             "layout (location = 0) in vec3 inPosition;\n"
+                             "layout (location = 1) in vec3 inColor;\n"
+                             "layout (location = 2) in vec2 inUV;\n"
+                             "layout (location = 0) out vec3 position;\n"
+                             "layout (location = 1) out vec3 color;\n"
+                             "out gl_PerVertex {\n"
+                             "  vec4 gl_Position;\n"
+                             "  float gl_PointSize;\n"
+                             "  float gl_ClipDistance[];\n"
+                             "};\n"
+                             "layout (binding = 0) uniform ViewProjection { mat4 view; mat4 projection; };\n"
+                             "layout (binding = 1) uniform Transform { mat4 transforms[128]; };\n"
+                             "void main() {\n"
+                             "  gl_Position = projection * view * transforms[gl_InstanceID] * vec4(inPosition, 1.0);\n"
+                             "  position = (transforms[gl_InstanceID] * vec4(inPosition, 1.0)).xyz;\n"
+                             "  color = inColor.rgb;\n"
+                             "}";
+      options.fragmentSource = "#version 460\n"
+                               "layout (location = 0) in vec3 position;\n"
+                               "layout (location = 1) in vec3 color;\n"
+                               "out vec4 fragColor;\n"
+                               "layout (binding = 2) uniform Material {\n"
+                               "  vec3 color;"
+                               "} material;\n"
+                               "void main() {\n"
+                               "  if (((int(0.5 * position.x) + int(0.5 * position.z)) & 1) == 1)\n"
+                               "    fragColor = vec4(material.color * color, 1.0);\n"
+                               "  else\n"
+                               "    fragColor = vec4(material.color * 0.5 * color, 1.0);\n"
+                               "}";
+      shader.initialize(options);
     }
-    glAttachShader(programV, shaderV);
-    glLinkProgram(programV);
 
-    GLuint programF = glCreateProgram();
-    glProgramParameteri(programF, GL_PROGRAM_SEPARABLE, GL_TRUE);
-    GLuint shaderF = glCreateShader(GL_FRAGMENT_SHADER);
-    {
-      const char* source = "#version 460\n"
-                           "layout (location = 0) in vec3 position;\n"
-                           "layout (location = 1) in vec3 color;\n"
-                           "out vec4 fragColor;\n"
-                           "void main() {\n"
-                           "  if (((int(0.5 * position.x) + int(0.5 * position.z)) & 1) == 1)\n"
-                           "    fragColor = vec4(color, 1.0);\n"
-                           "  else\n"
-                           "    fragColor = vec4(0.5 * color, 1.0);\n"
-                           "}";
-
-      glShaderSource(shaderF, 1, &source, nullptr);
-      glCompileShader(shaderF);
-      glGetShaderInfoLog(shaderF, sizeof(buffer), nullptr, buffer);
-      if (buffer[0])
-        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "fragment shader compile error", buffer, m_window);
-    }
-    glAttachShader(programF, shaderF);
-    glLinkProgram(programF);
-
-    GLuint programUniformBlockIndex1 = glGetUniformBlockIndex(programV, "ViewProjection");
-    glUniformBlockBinding(programV, programUniformBlockIndex1, 0);
-    GLuint programUniformBlockIndex2 = glGetUniformBlockIndex(programV, "Transform");
-    glUniformBlockBinding(programV, programUniformBlockIndex2, 1);
-
-    GLuint pipeline;
-    glCreateProgramPipelines(1, &pipeline);
-    glUseProgramStages(pipeline, GL_VERTEX_SHADER_BIT, programV);
-    glUseProgramStages(pipeline, GL_FRAGMENT_SHADER_BIT, programF);
+    GLuint programUniformBlockIndex1 = glGetUniformBlockIndex(shader.programV, "ViewProjection");
+    glUniformBlockBinding(shader.programV, programUniformBlockIndex1, 0);
+    GLuint programUniformBlockIndex2 = glGetUniformBlockIndex(shader.programV, "Transform");
+    glUniformBlockBinding(shader.programV, programUniformBlockIndex2, 1);
+    GLuint programUniformBlockIndex3 = glGetUniformBlockIndex(shader.programF, "Material");
+    glUniformBlockBinding(shader.programF, programUniformBlockIndex3, 2);
 
     SDL_ShowWindow(m_window);
 
@@ -603,7 +688,7 @@ public:
       glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
       glBindVertexArray(vertexArray);
-      glBindProgramPipeline(pipeline);
+      glBindProgramPipeline(shader.programPipeline);
 
       glVertexArrayVertexBuffer(vertexArray, binding(0), vertexBufferLand, 0, 8 * sizeof(float));
       glVertexArrayElementBuffer(vertexArray, elementBufferLand);
@@ -611,23 +696,22 @@ public:
       {
         cameraViewProjection.viewMatrix4 = m_scene.getMainCamera()->viewMatrix4();
         cameraViewProjection.projectionMatrix4 = m_scene.getMainCamera()->projectionMatrix4();
-        {
-          char* buf = (char*)glMapNamedBuffer(uniformBuffers[0], GL_WRITE_ONLY);
-          memcpy(buf, &cameraViewProjection, sizeof(cameraViewProjection));
-          glUnmapNamedBuffer(uniformBuffers[0]);
-        }
+        glNamedBufferSubData(uniformBuffers[0], 0, sizeof(cameraViewProjection), &cameraViewProjection);
+        glBindBufferRange(GL_UNIFORM_BUFFER, 0, uniformBuffers[0], 0, sizeof(cameraViewProjection));
       }
-      glBindBufferBase(GL_UNIFORM_BUFFER, 0, uniformBuffers[0]);
+
+      {
+        float color[3]{ 1.0f, 0.5f, 0.5f };
+        glNamedBufferSubData(uniformBuffers[2], 0, sizeof(color), &color);
+        glBindBufferRange(GL_UNIFORM_BUFFER, 2, uniformBuffers[2], 0, sizeof(color));
+      }
 
       {
         objectTransforms.transforms[0] = landObject->transform.asMatrix4();
-        {
-          char* buf = (char*)glMapNamedBuffer(uniformBuffers[1], GL_WRITE_ONLY);
-          memcpy(buf, &objectTransforms, sizeof(glm::mat4x4) * 1);
-          glUnmapNamedBuffer(uniformBuffers[1]);
-        }
+        glNamedBufferSubData(uniformBuffers[1], 0, sizeof(glm::mat4x4), &objectTransforms);
+        glBindBufferRange(GL_UNIFORM_BUFFER, 1, uniformBuffers[1], 0, sizeof(glm::mat4x4));
       }
-      glBindBufferBase(GL_UNIFORM_BUFFER, 1, uniformBuffers[1]);
+
       glDrawElementsInstanced(GL_TRIANGLES, 6, GL_UNSIGNED_INT, nullptr, 1);
 
       glVertexArrayVertexBuffer(vertexArray, binding(0), vertexBuffer, 0, 8 * sizeof(float));
@@ -643,11 +727,7 @@ public:
         for (size_t i = 0; i < movingObjects.size(); i++) {
           objectTransforms.transforms[i] = movingObjects[i]->transform.asMatrix4();
         }
-        {
-          char* buf = (char*)glMapNamedBuffer(uniformBuffers[1], GL_WRITE_ONLY);
-          memcpy(buf, &objectTransforms, sizeof(glm::mat4x4) * movingObjects.size());
-          glUnmapNamedBuffer(uniformBuffers[1]);
-        }
+        glNamedBufferSubData(uniformBuffers[1], 0, sizeof(glm::mat4x4) * movingObjects.size(), &objectTransforms);
       }
       glBindBufferBase(GL_UNIFORM_BUFFER, 1, uniformBuffers[1]);
       glDrawElementsInstanced(GL_TRIANGLES, 3, GL_UNSIGNED_INT, nullptr, int(movingObjects.size()));
