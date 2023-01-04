@@ -235,19 +235,35 @@ struct Shader {
     const char* fragmentSource = nullptr;
   };
 
+  struct BufferBinding {
+    uint32_t bufferOffset;
+    uint32_t bufferSize;
+    uint32_t bindingIndex;
+  };
+
+  struct Uniform {
+    uint32_t bufferOffset;
+    uint32_t bufferSize;
+  };
+
   void initialize(const Options& options) {
     programV = glCreateShaderProgramv(GL_VERTEX_SHADER, 1, &options.vertexSource);
-    checkLinkStatus(programV);
+    bool vStatus = checkLinkStatus(programV);
 
     programF = glCreateShaderProgramv(GL_FRAGMENT_SHADER, 1, &options.fragmentSource);
-    checkLinkStatus(programF);
+    bool fStatus = checkLinkStatus(programF);
 
-    glCreateProgramPipelines(1, &programPipeline);
-    glUseProgramStages(programPipeline, GL_VERTEX_SHADER_BIT, programV);
-    glUseProgramStages(programPipeline, GL_FRAGMENT_SHADER_BIT, programF);
+    if (vStatus && fStatus) {
+      glCreateProgramPipelines(1, &programPipeline);
+      glUseProgramStages(programPipeline, GL_VERTEX_SHADER_BIT, programV);
+      glUseProgramStages(programPipeline, GL_FRAGMENT_SHADER_BIT, programF);
 
-    listProgramUniforms(programV);
-    listProgramUniforms(programF);
+      listProgramUniforms(programV);
+      listProgramUniforms(programF);
+    }
+    else {
+      throw std::runtime_error("shader failure");
+    }
   }
 
   GLuint programV = -1;
@@ -255,7 +271,7 @@ struct Shader {
   GLuint programPipeline = -1;
 
 private:
-  void checkLinkStatus(GLuint program) {
+  bool checkLinkStatus(GLuint program) {
     GLint linkStatus;
     glGetProgramiv(program, GL_LINK_STATUS, &linkStatus);
     if (linkStatus == GL_FALSE) {
@@ -263,29 +279,62 @@ private:
       glGetProgramInfoLog(program, sizeof(buffer), nullptr, buffer);
       printf("fs: %s\n", buffer);
     }
+    return linkStatus == GL_TRUE;
   }
 
   void listProgramUniforms(GLuint program) {
-    char buffer[1024];
-    GLint uniformCount = 0;
-    glGetProgramiv(program, GL_ACTIVE_UNIFORMS, &uniformCount);
-    if (uniformCount != 0) {
-      GLint maxNameLength;
-      glGetProgramiv(program, GL_ACTIVE_UNIFORM_MAX_LENGTH, &maxNameLength);
-      auto uniformName = std::make_unique<char[]>(maxNameLength);
-      for (GLint i = 0; i < uniformCount; i++) {
-        GLint size;
-        GLenum type;
-        glGetActiveUniform(program, i, sizeof(buffer), nullptr, &size, &type, buffer);
-        printf("%s: size(%d) type(%d)\n", buffer, size, type);
-      }
+    GLint numUniformBlocks;
+    glGetProgramInterfaceiv(program, GL_UNIFORM_BLOCK, GL_ACTIVE_RESOURCES, &numUniformBlocks);
+    std::vector<GLint> bufferBindings(numUniformBlocks);
+    std::vector<GLint> bufferDataSizes(numUniformBlocks);
+    for (GLint i = 0; i < numUniformBlocks; i++) {
+      char uniformBlockNameBuffer[128];
+      GLenum props[]{ GL_BUFFER_BINDING, GL_BUFFER_DATA_SIZE };
+      const GLuint numProps = sizeof(props) / sizeof(props[0]);
+      GLint values[numProps];
+      glGetProgramResourceName(program, GL_UNIFORM_BLOCK, i, sizeof(uniformBlockNameBuffer), nullptr, uniformBlockNameBuffer);
+      glGetProgramResourceiv(program, GL_UNIFORM_BLOCK, i, numProps, props, numProps, nullptr, values);
+      printf("UniformBlock %s: binding %d, size %d\n", uniformBlockNameBuffer, values[0], values[1]);
+      bufferBindings[i] = values[0];
+      bufferDataSizes[i] = values[1];
+    }
+
+    GLint numUniforms;
+    std::vector<GLint> uniformTypes;
+    std::vector<GLint> uniformArraySizes;
+    std::vector<GLint> uniformOffsets;
+    std::vector<GLint> uniformBlockIndices;
+    std::vector<GLint> uniformLocations;
+    glGetProgramInterfaceiv(program, GL_UNIFORM, GL_ACTIVE_RESOURCES, &numUniforms);
+    for (GLint i = 0; i < numUniforms; i++) {
+      char uniformNameBuffer[128];
+      GLenum props[]{ GL_TYPE, GL_ARRAY_SIZE, GL_OFFSET, GL_BLOCK_INDEX, GL_ARRAY_STRIDE, GL_LOCATION };
+      const GLuint numProps = sizeof(props) / sizeof(props[0]);
+      GLint values[numProps];
+      glGetProgramResourceName(program, GL_UNIFORM, i, sizeof(uniformNameBuffer), nullptr, uniformNameBuffer);
+      glGetProgramResourceiv(program, GL_UNIFORM, i, numProps, props, numProps, nullptr, values);
+      printf("  Uniform %s: type %d, array_size %d, offset %d, block_index %d, array_stride %d, location %d\n",
+        uniformNameBuffer, values[0], values[1], values[2], values[3], values[4], values[5]);
     }
   }
 };
 
 struct Material {
+  struct BufferBinding {
+    uint32_t bufferOffset;
+    uint32_t bufferSize;
+    uint32_t bindingIndex;
+  };
+
+  struct Uniform {
+    uint32_t bufferOffset;
+    uint32_t bufferSize;
+  };
+
   Shader* shader;
-  // editing values for uniforms here
+  std::unique_ptr<char[]> buffer; // data from this buffer is used to update material UBO
+  std::vector<BufferBinding> bufferBindings;
+  std::unordered_map<std::string, Uniform> uniforms;
 };
 
 class MeshRenderer : public Component {
@@ -575,11 +624,12 @@ public:
       glm::mat4x4 transforms[128];
     } objectTransforms;
 
-    GLuint uniformBuffers[3];
-    glCreateBuffers(3, uniformBuffers);
+    GLuint uniformBuffers[4];
+    glCreateBuffers(4, uniformBuffers);
     glNamedBufferData(uniformBuffers[0], sizeof(ViewProjectionMatrix), nullptr, GL_DYNAMIC_DRAW);
     glNamedBufferData(uniformBuffers[1], sizeof(TransformMatrices), nullptr, GL_DYNAMIC_DRAW);
     glNamedBufferData(uniformBuffers[2], 64 * 1024, nullptr, GL_DYNAMIC_DRAW);
+    glNamedBufferData(uniformBuffers[3], 64 * 1024, nullptr, GL_DYNAMIC_DRAW);
 
     GLuint vertexArray;
     glCreateVertexArrays(1, &vertexArray);
@@ -609,8 +659,8 @@ public:
                              "  float gl_PointSize;\n"
                              "  float gl_ClipDistance[];\n"
                              "};\n"
-                             "layout (binding = 0) uniform ViewProjection { mat4 view; mat4 projection; };\n"
-                             "layout (binding = 1) uniform Transform { mat4 transforms[128]; };\n"
+                             "layout (std140, binding = 0) uniform ViewProjection { mat4 view; mat4 projection; };\n"
+                             "layout (std140, binding = 1) uniform Transform { mat4 transforms[128]; };\n"
                              "void main() {\n"
                              "  gl_Position = projection * view * transforms[gl_InstanceID] * vec4(inPosition, 1.0);\n"
                              "  position = (transforms[gl_InstanceID] * vec4(inPosition, 1.0)).xyz;\n"
@@ -620,24 +670,34 @@ public:
                                "layout (location = 0) in vec3 position;\n"
                                "layout (location = 1) in vec3 color;\n"
                                "out vec4 fragColor;\n"
+                               "struct Light { vec3 position; vec3 color; };"
+                               "layout (binding = 3) uniform Lights {\n"
+                               "  vec3 positions[128];\n"
+                               "  vec3 colors[128];\n"
+                               "} lights;\n"
                                "layout (binding = 2) uniform Material {\n"
-                               "  vec3 color;"
+                               "  vec3 color;\n"
+                               "  vec3 ambient;\n"
                                "} material;\n"
+                               "uniform float time;"
+                               "uniform int numLights;"
                                "void main() {\n"
+                               "  float surfColorMul = 1.0;\n"
                                "  if (((int(0.5 * position.x) + int(0.5 * position.z)) & 1) == 1)\n"
-                               "    fragColor = vec4(material.color * color, 1.0);\n"
-                               "  else\n"
-                               "    fragColor = vec4(material.color * 0.5 * color, 1.0);\n"
+                               "    surfColorMul = 0.5;\n"
+                               "  vec3 lightsColor = vec3(0.0,0.0,0.0);\n"
+                               "  for (int i = 0; i < numLights; i++) { lightsColor += lights.colors[i] / (1.0 + length(position - lights.positions[i])); }"
+                               "  fragColor = vec4(surfColorMul * material.color * (material.ambient + lightsColor), 1.0);\n"
                                "}";
       shader.initialize(options);
     }
 
-    GLuint programUniformBlockIndex1 = glGetUniformBlockIndex(shader.programV, "ViewProjection");
-    glUniformBlockBinding(shader.programV, programUniformBlockIndex1, 0);
-    GLuint programUniformBlockIndex2 = glGetUniformBlockIndex(shader.programV, "Transform");
-    glUniformBlockBinding(shader.programV, programUniformBlockIndex2, 1);
-    GLuint programUniformBlockIndex3 = glGetUniformBlockIndex(shader.programF, "Material");
-    glUniformBlockBinding(shader.programF, programUniformBlockIndex3, 2);
+    glUniformBlockBinding(shader.programV, glGetUniformBlockIndex(shader.programV, "ViewProjection"), 0);
+    glUniformBlockBinding(shader.programV, glGetUniformBlockIndex(shader.programV, "Transform"), 1);
+    glUniformBlockBinding(shader.programF, glGetUniformBlockIndex(shader.programF, "Material"), 2);
+    glUniformBlockBinding(shader.programF, glGetUniformBlockIndex(shader.programF, "Lights"), 3);
+    GLuint timeloc = glGetUniformLocation(shader.programF, "time");
+    GLuint numLightsLoc = glGetUniformLocation(shader.programF, "numLights");
 
     SDL_ShowWindow(m_window);
 
@@ -689,6 +749,7 @@ public:
 
       glBindVertexArray(vertexArray);
       glBindProgramPipeline(shader.programPipeline);
+      glProgramUniform1f(shader.programF, timeloc, m_time.timeSinceStart);
 
       glVertexArrayVertexBuffer(vertexArray, binding(0), vertexBufferLand, 0, 8 * sizeof(float));
       glVertexArrayElementBuffer(vertexArray, elementBufferLand);
@@ -702,9 +763,26 @@ public:
 
       {
         float color[3]{ 1.0f, 0.5f, 0.5f };
+        float ambient[3]{ 0.1f, 0.1f, 0.2f };
         glNamedBufferSubData(uniformBuffers[2], 0, sizeof(color), &color);
-        glBindBufferRange(GL_UNIFORM_BUFFER, 2, uniformBuffers[2], 0, sizeof(color));
+        glNamedBufferSubData(uniformBuffers[2], 16, sizeof(ambient), &ambient);
+        glBindBufferRange(GL_UNIFORM_BUFFER, 2, uniformBuffers[2], 0, 32);
       }
+
+      {
+        glm::vec4 positions[2]{
+          { 0.0f, 10.0f * std::sin(m_time.timeSinceStart), 0.0f, 0.0f },
+          { 10.0f * std::sin(m_time.timeSinceStart), 10.0f * std::sin(m_time.timeSinceStart), 0.0f, 0.0f }
+        };
+        glm::vec4 colors[2]{
+          { 5.0f, 5.0f, 5.0f, 0.0f },
+          { 3.0f, 0.0f, 0.0f, 0.0f }
+        };
+        glNamedBufferSubData(uniformBuffers[3], 0, 32, &positions);
+        glNamedBufferSubData(uniformBuffers[3], 2048, 32, &colors);
+        glBindBufferRange(GL_UNIFORM_BUFFER, 3, uniformBuffers[3], 0, 4096);
+      }
+      glProgramUniform1i(shader.programF, numLightsLoc, 2);
 
       {
         objectTransforms.transforms[0] = landObject->transform.asMatrix4();
