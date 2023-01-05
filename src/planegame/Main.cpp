@@ -236,19 +236,33 @@ struct ShaderProgram {
   };
 
   struct UniformBlock {
+    struct Entry {
+      std::string name;
+      GLint type;
+      GLint size;
+      GLint offset;
+      GLint stride;
+    };
+
+    const Entry* getEntry(const char* name) const {
+      auto it = std::find_if(entries.begin(), entries.end(), [name](const Entry& entry) { return entry.name == name; });
+      if (it != entries.end())
+        return &(*it);
+      else
+        return nullptr;
+    }
+
     std::string name;
     GLuint binding;
     GLuint size;
     GLuint index;
+    std::vector<Entry> entries;
   };
 
   struct Uniform {
     std::string name;
     GLint type;
     GLint size;
-    GLint blockIndex;
-    GLint offset;
-    GLint stride;
     GLint location;
   };
 
@@ -262,7 +276,7 @@ struct ShaderProgram {
     return status;
   }
 
-  const UniformBlock* uniformBlock(const char* name) const {
+  const UniformBlock* getUniformBlock(const char* name) const {
     auto it = std::find_if(uniformBlocks.begin(), uniformBlocks.end(), [name](const UniformBlock& block) { return block.name == name; });
     if (it != uniformBlocks.end())
       return &(*it);
@@ -270,12 +284,35 @@ struct ShaderProgram {
       return nullptr;
   }
 
-  const Uniform* uniform(const char* name) const {
+  const Uniform* getUniform(const char* name) const {
     auto it = std::find_if(uniforms.begin(), uniforms.end(), [name](const Uniform& block) { return block.name == name; });
     if (it != uniforms.end())
       return &(*it);
     else
       return nullptr;
+  }
+
+  template <class T>
+  void setUniform(const char* uniformName, const T& value) {
+    const Uniform* pUniform = getUniform(uniformName);
+    if (pUniform) {
+      if constexpr (std::is_same_v<T, int>)
+        glProgramUniform1i(program, pUniform->location, value);
+      else if constexpr (std::is_same_v<T, float>)
+        glProgramUniform1f(program, pUniform->location, value);
+      else if constexpr (std::is_same_v<T, bool>)
+        glProgramUniform1i(program, pUniform->location, value);
+      else if constexpr (std::is_same_v<T, glm::vec2>)
+        glProgramUniform2f(program, pUniform->location, value[0], value[1]);
+      else if constexpr (std::is_same_v<T, glm::vec3>)
+        glProgramUniform3f(program, pUniform->location, value[0], value[1], value[2]);
+      else if constexpr (std::is_same_v<T, glm::vec4>)
+        glProgramUniform4f(program, pUniform->location, value[0], value[1], value[2], value[3]);
+      else if constexpr (std::is_same_v<T, glm::mat4>)
+        glProgramUniformMatrix4fv(program, pUniform->location, 1, GL_FALSE, reinterpret_cast<const float*>(&value));
+      else
+        static_assert(false);
+    }
   }
 
   GLuint program;
@@ -299,11 +336,11 @@ private:
     for (GLint i = 0; i < numUniformBlocks; i++) {
       char uniformBlockNameBuffer[128];
       glGetProgramResourceName(program, GL_UNIFORM_BLOCK, i, sizeof(uniformBlockNameBuffer), nullptr, uniformBlockNameBuffer);
-      uniformBlocks[i].name = uniformBlockNameBuffer;
       GLenum props[]{ GL_BUFFER_BINDING, GL_BUFFER_DATA_SIZE };
       const GLuint numProps = sizeof(props) / sizeof(props[0]);
       GLint values[numProps];
       glGetProgramResourceiv(program, GL_UNIFORM_BLOCK, i, numProps, props, numProps, nullptr, values);
+      uniformBlocks[i].name = uniformBlockNameBuffer;
       uniformBlocks[i].binding = values[0];
       uniformBlocks[i].size = values[1];
       uniformBlocks[i].index = i;
@@ -311,37 +348,43 @@ private:
 
     GLint numUniforms;
     glGetProgramInterfaceiv(program, GL_UNIFORM, GL_ACTIVE_RESOURCES, &numUniforms);
-    uniforms.resize(numUniforms);
     for (GLint i = 0; i < numUniforms; i++) {
       char uniformNameBuffer[128];
       glGetProgramResourceName(program, GL_UNIFORM, i, sizeof(uniformNameBuffer), nullptr, uniformNameBuffer);
-      uniforms[i].name = uniformNameBuffer;
       GLenum props[]{ GL_TYPE, GL_ARRAY_SIZE, GL_OFFSET, GL_BLOCK_INDEX, GL_ARRAY_STRIDE, GL_LOCATION };
       const GLuint numProps = sizeof(props) / sizeof(props[0]);
       GLint values[numProps];
       glGetProgramResourceiv(program, GL_UNIFORM, i, numProps, props, numProps, nullptr, values);
-      uniforms[i].type = values[0];
-      uniforms[i].size = values[1];
-      uniforms[i].offset = values[2];
-      uniforms[i].blockIndex = values[3];
-      uniforms[i].stride = values[4];
-      uniforms[i].location = values[5];
+      GLint blockIndex = values[3];
+      if (blockIndex != -1) {
+        UniformBlock::Entry entry;
+        entry.name = uniformNameBuffer;
+        entry.type = values[0];
+        entry.size = values[1];
+        entry.offset = values[2];
+        entry.stride = values[4];
+        uniformBlocks[blockIndex].entries.push_back(std::move(entry));
+      }
+      else {
+        Uniform uniform;
+        uniform.name = uniformNameBuffer;
+        uniform.type = values[0];
+        uniform.size = values[1];
+        uniform.location = values[5];
+        uniforms.push_back(std::move(uniform));
+      }
     }
 
     printf("ShaderProgram\n");
     for (GLint i = 0; i < numUniformBlocks; i++) {
       printf("  UniformBlock %s: binding %d, size %d\n", uniformBlocks[i].name.c_str(), uniformBlocks[i].binding, uniformBlocks[i].size);
-      for (GLint j = 0; j < numUniforms; j++) {
-        if (uniforms[j].blockIndex != i)
-          continue;
-        printf("    Uniform %s: type %d, array_size %d, offset %d, array_stride %d\n",
-          uniforms[j].name.c_str(), uniforms[j].type, uniforms[j].size, uniforms[j].offset, uniforms[j].stride);
+      for (UniformBlock::Entry& entry : uniformBlocks[i].entries) {
+        printf("    Entry %s: type %d, array_size %d, offset %d, array_stride %d\n",
+          entry.name.c_str(), entry.type, entry.size, entry.offset, entry.stride);
       }
     }
 
-    for (GLint i = 0; i < numUniforms; i++) {
-      if (uniforms[i].blockIndex != -i)
-        continue;
+    for (GLint i = 0; i < uniforms.size(); i++) {
       printf("  Uniform %s: type %d, array_size %d, location %d\n",
         uniforms[i].name.c_str(), uniforms[i].type, uniforms[i].size, uniforms[i].location);
     }
@@ -381,7 +424,28 @@ struct Shader {
 };
 
 struct Material {
-  Shader* shader;
+  void initialize(Shader* shader) {
+    this->shader = shader;
+    materialUniformBlock = shader->fragShader.getUniformBlock("Material");
+    uniformStorage = std::make_unique<char[]>(materialUniformBlock->size);
+  }
+
+  template <class T>
+  void setIndexedValue(const char* name, int index, const T& value) {
+    const ShaderProgram::UniformBlock::Entry* entry = materialUniformBlock->getEntry(name);
+    if (!entry)
+      return;
+    memcpy(uniformStorage.get() + index * entry->stride + entry->offset, &value, sizeof(value));
+  }
+
+  template <class T>
+  void setValue(const char* name, const T& value) {
+    setIndexedValue(name, 0, value);
+  }
+
+  Shader* shader = nullptr;
+  const ShaderProgram::UniformBlock* materialUniformBlock = nullptr;
+  std::unique_ptr<char[]> uniformStorage;
 };
 
 class MeshRenderer : public Component {
@@ -662,21 +726,17 @@ public:
     uint32_t indices[]{ 0, 1, 2 };
     glNamedBufferData(elementBuffer, sizeof(indices), indices, GL_STATIC_DRAW);
 
-    struct ViewProjectionMatrix {
-      glm::mat4x4 viewMatrix4;
-      glm::mat4x4 projectionMatrix4;
-    } cameraViewProjection;
-
-    struct TransformMatrices {
-      glm::mat4x4 transforms[128];
-    } objectTransforms;
-
-    GLuint uniformBuffers[4];
-    glCreateBuffers(4, uniformBuffers);
-    glNamedBufferData(uniformBuffers[0], sizeof(ViewProjectionMatrix), nullptr, GL_DYNAMIC_DRAW);
-    glNamedBufferData(uniformBuffers[1], sizeof(TransformMatrices), nullptr, GL_DYNAMIC_DRAW);
+    GLint ubOffsetAlignment;
+    glGetIntegerv(GL_UNIFORM_BUFFER_OFFSET_ALIGNMENT, &ubOffsetAlignment);
+    GLuint uniformBuffers[3];
+    glCreateBuffers(3, uniformBuffers);
+    glNamedBufferData(uniformBuffers[0], 64 * 1024, nullptr, GL_DYNAMIC_DRAW);
+    glNamedBufferData(uniformBuffers[1], 64 * 1024, nullptr, GL_DYNAMIC_DRAW);
     glNamedBufferData(uniformBuffers[2], 64 * 1024, nullptr, GL_DYNAMIC_DRAW);
-    glNamedBufferData(uniformBuffers[3], 64 * 1024, nullptr, GL_DYNAMIC_DRAW);
+    std::vector<char> uniformBufferStorage[3];
+    uniformBufferStorage[0].resize(64 * 1024);
+    uniformBufferStorage[1].resize(64 * 1024);
+    uniformBufferStorage[2].resize(64 * 1024);
 
     GLuint vertexArray;
     glCreateVertexArrays(1, &vertexArray);
@@ -692,6 +752,15 @@ public:
       glVertexArrayAttribBinding(vertexArray, attrib(2), binding(0));
     }
 
+    // render (basic):
+    // update scene uniforms (camera, lights)
+    // for each mesh renderer component:
+    //   bind vao for mesh
+    //   for each submesh in mesh:
+    //     bind associated material shader
+    //     update shader uniforms from material
+    //     draw
+
     Shader shader;
     {
       Shader::Options options{};
@@ -706,31 +775,36 @@ public:
                              "  float gl_PointSize;\n"
                              "  float gl_ClipDistance[];\n"
                              "};\n"
+                             "layout (std140, binding = 2) uniform Material {\n"
+                             "  vec3 color;\n"
+                             "  vec3 ambient;\n"
+                             "} material;\n"
                              "layout (std140, binding = 0) uniform ViewProjection { mat4 view; mat4 projection; };\n"
-                             "layout (std140, binding = 1) uniform Transform { mat4 transforms[128]; };\n"
+                             "uniform mat4 model;"
                              "void main() {\n"
-                             "  gl_Position = projection * view * transforms[gl_InstanceID] * vec4(inPosition, 1.0);\n"
-                             "  position = (transforms[gl_InstanceID] * vec4(inPosition, 1.0)).xyz;\n"
+                             "  gl_Position = projection * view * model * vec4(inPosition, 1.0);\n"
+                             "  position = (model * vec4(inPosition, 1.0)).xyz;\n"
                              "  color = inColor.rgb;\n"
                              "}";
       options.fragmentSource = "#version 460\n"
                                "layout (location = 0) in vec3 position;\n"
                                "layout (location = 1) in vec3 color;\n"
-                               "out vec4 fragColor;\n"
+                               "layout (location = 0) out vec4 fragColor;\n"
                                "struct Light { vec3 position; vec3 color; };"
-                               "layout (std140, binding = 3) uniform Lights {\n"
+                               "layout (std140, binding = 1) uniform Lights {\n"
                                "  vec3 positions[128];\n"
                                "  vec3 colors[128];\n"
                                "} lights;\n"
-                               "layout (binding = 2) uniform Material {\n"
+                               "layout (std140, binding = 2) uniform Material {\n"
                                "  vec3 color;\n"
                                "  vec3 ambient;\n"
                                "} material;\n"
                                "uniform float time;"
                                "uniform int numLights;"
+                               "uniform bool enableCheckerboard;"
                                "void main() {\n"
                                "  float surfColorMul = 1.0;\n"
-                               "  if (((int(0.5 * position.x) + int(0.5 * position.z)) & 1) == 1)\n"
+                               "  if (enableCheckerboard && ((int(0.5 * position.x) + int(0.5 * position.z)) & 1) == 1)\n"
                                "    surfColorMul = 0.5;\n"
                                "  vec3 lightsColor = vec3(0.0,0.0,0.0);\n"
                                "  for (int i = 0; i < numLights; i++) { lightsColor += lights.colors[i] / (1.0 + length(position - lights.positions[i])); }"
@@ -739,12 +813,13 @@ public:
       shader.initialize(options);
     }
 
-    glUniformBlockBinding(shader.vertShader.program, shader.vertShader.uniformBlock("ViewProjection")->index, 0);
-    glUniformBlockBinding(shader.vertShader.program, shader.vertShader.uniformBlock("Transform")->index, 1);
-    glUniformBlockBinding(shader.fragShader.program, shader.fragShader.uniformBlock("Material")->index, 2);
-    glUniformBlockBinding(shader.fragShader.program, shader.fragShader.uniformBlock("Lights")->index, 3);
-    // GLuint timeloc = shader.fragShader.uniform("time")->location;
-    GLuint numLightsLoc = shader.fragShader.uniform("numLights")->location;
+    Material materialLand;
+    materialLand.initialize(&shader);
+    materialLand.setValue("Material.color", glm::vec3{ 0.0f, 1.0f, 0.0f });
+
+    Material materialObject;
+    materialObject.initialize(&shader);
+    materialObject.setValue("Material.color", glm::vec3{ 1.0f, 1.0f, 1.0f });
 
     SDL_ShowWindow(m_window);
 
@@ -791,45 +866,73 @@ public:
 
       glBindVertexArray(vertexArray);
       glBindProgramPipeline(shader.programPipeline);
-      // glProgramUniform1f(shader.fragShader.program, timeloc, m_time.timeSinceStart);
+      shader.vertShader.setUniform("time", float(m_time.timeSinceStart));
+      shader.fragShader.setUniform("time", float(m_time.timeSinceStart));
 
       glVertexArrayVertexBuffer(vertexArray, binding(0), vertexBufferLand, 0, 8 * sizeof(float));
       glVertexArrayElementBuffer(vertexArray, elementBufferLand);
 
+      auto alignedValue = [](uint32_t value, uint32_t alignment) {
+        return (value + alignment - 1) & (~(alignment - 1));
+      };
+
+      // Set up scene objects
       {
-        cameraViewProjection.viewMatrix4 = m_scene.getMainCamera()->viewMatrix4();
-        cameraViewProjection.projectionMatrix4 = m_scene.getMainCamera()->projectionMatrix4();
-        glNamedBufferSubData(uniformBuffers[0], 0, sizeof(cameraViewProjection), &cameraViewProjection);
-        glBindBufferRange(GL_UNIFORM_BUFFER, 0, uniformBuffers[0], 0, sizeof(cameraViewProjection));
+        char* uniformBuffer0 = uniformBufferStorage[0].data();
+        char* viewProjectionSubBuffer = uniformBuffer0;
+        uint64_t viewProjectionSubBufferSize = alignedValue(shader.vertShader.getUniformBlock("ViewProjection")->size, ubOffsetAlignment);
+        uint64_t viewProjectionSubBufferOffset = viewProjectionSubBuffer - uniformBuffer0;
+
+        {
+          glm::mat4 view = m_scene.getMainCamera()->viewMatrix4();
+          glm::mat4 projection = m_scene.getMainCamera()->projectionMatrix4();
+          memcpy(viewProjectionSubBuffer + shader.vertShader.getUniformBlock("ViewProjection")->getEntry("view")->offset, &view, sizeof(view));
+          memcpy(viewProjectionSubBuffer + shader.vertShader.getUniformBlock("ViewProjection")->getEntry("projection")->offset, &projection, sizeof(projection));
+        }
+
+        char* lightsSubBuffer = viewProjectionSubBuffer + viewProjectionSubBufferSize;
+        uint64_t lightsSubBufferSize = alignedValue(shader.fragShader.getUniformBlock("Lights")->size, ubOffsetAlignment);
+        uint64_t lightsSubBufferOffset = lightsSubBuffer - uniformBuffer0;
+
+        {
+          const int numLights = 2;
+          glm::vec3 positions[numLights]{
+            { 0.0f, 10.0f * std::sin(m_time.timeSinceStart), 0.0f },
+            { 10.0f * std::sin(m_time.timeSinceStart), 10.0f * std::sin(m_time.timeSinceStart), 0.0f }
+          };
+          glm::vec3 colors[numLights]{
+            { 5.0f, 5.0f, 5.0f },
+            { 3.0f, 0.0f, 0.0f }
+          };
+
+          for (int i = 0; i < numLights; i++) {
+            auto positionEntry = shader.fragShader.getUniformBlock("Lights")->getEntry("Lights.positions[0]");
+            auto colorEntry = shader.fragShader.getUniformBlock("Lights")->getEntry("Lights.colors[0]");
+            memcpy(lightsSubBuffer + positionEntry->offset + i * positionEntry->stride, &positions[i], sizeof(positions[i]));
+            memcpy(lightsSubBuffer + colorEntry->offset + i * colorEntry->stride, &colors[i], sizeof(colors[i]));
+          }
+          shader.fragShader.setUniform("numLights", numLights);
+        }
+
+        char* uniformBuffer0End = lightsSubBuffer + lightsSubBufferSize;
+
+        uint64_t uniformBuffer0Size = uniformBuffer0End - uniformBuffer0;
+
+        glNamedBufferSubData(uniformBuffers[0], 0, uniformBuffer0Size, uniformBuffer0);
+
+        glBindBufferRange(GL_UNIFORM_BUFFER, shader.vertShader.getUniformBlock("ViewProjection")->binding, uniformBuffers[0], viewProjectionSubBufferOffset, viewProjectionSubBufferSize);
+        glBindBufferRange(GL_UNIFORM_BUFFER, shader.fragShader.getUniformBlock("Lights")->binding, uniformBuffers[0], lightsSubBufferOffset, lightsSubBufferSize);
       }
 
-      {
-        float color[3]{ 1.0f, 0.5f, 0.5f };
-        float ambient[3]{ 0.1f, 0.1f, 0.2f };
-        glNamedBufferSubData(uniformBuffers[2], 0, sizeof(color), &color);
-        glNamedBufferSubData(uniformBuffers[2], 16, sizeof(ambient), &ambient);
-        glBindBufferRange(GL_UNIFORM_BUFFER, 2, uniformBuffers[2], 0, 32);
-      }
+      shader.vertShader.setUniform("model", landObject->transform.asMatrix4());
+      char* uniformBuffer2 = uniformBufferStorage[2].data();
+      char* materialSubBuffer = uniformBuffer2;
+      uint32_t materialSubBufferSize = alignedValue(shader.fragShader.getUniformBlock("Material")->size, ubOffsetAlignment);
 
       {
-        glm::vec4 positions[2]{
-          { 0.0f, 10.0f * std::sin(m_time.timeSinceStart), 0.0f, 0.0f },
-          { 10.0f * std::sin(m_time.timeSinceStart), 10.0f * std::sin(m_time.timeSinceStart), 0.0f, 0.0f }
-        };
-        glm::vec4 colors[2]{
-          { 5.0f, 5.0f, 5.0f, 0.0f },
-          { 3.0f, 0.0f, 0.0f, 0.0f }
-        };
-        glNamedBufferSubData(uniformBuffers[3], 0, 32, &positions);
-        glNamedBufferSubData(uniformBuffers[3], 2048, 32, &colors);
-        glBindBufferRange(GL_UNIFORM_BUFFER, 3, uniformBuffers[3], 0, 4096);
-      }
-      glProgramUniform1i(shader.fragShader.program, numLightsLoc, 2);
-
-      {
-        objectTransforms.transforms[0] = landObject->transform.asMatrix4();
-        glNamedBufferSubData(uniformBuffers[1], 0, sizeof(glm::mat4x4), &objectTransforms);
-        glBindBufferRange(GL_UNIFORM_BUFFER, 1, uniformBuffers[1], 0, sizeof(glm::mat4x4));
+        glNamedBufferSubData(uniformBuffers[2], 0, materialLand.materialUniformBlock->size, materialLand.uniformStorage.get());
+        glBindBufferRange(GL_UNIFORM_BUFFER, materialLand.materialUniformBlock->binding, uniformBuffers[2], 0, materialLand.materialUniformBlock->size);
+        shader.fragShader.setUniform("enableCheckerboard", true);
       }
 
       glDrawElementsInstanced(GL_TRIANGLES, 6, GL_UNSIGNED_INT, nullptr, 1);
@@ -837,27 +940,25 @@ public:
       glVertexArrayVertexBuffer(vertexArray, binding(0), vertexBuffer, 0, 8 * sizeof(float));
       glVertexArrayElementBuffer(vertexArray, elementBuffer);
 
-      std::vector<Object*> movingObjects;
       for (auto& script : m_scene.scripts.activeScripts) {
-        if (dynamic_cast<MovingObjectScript*>(script.get()) && movingObjects.size() < 100) {
-          movingObjects.push_back(&script->object);
+        if (dynamic_cast<MovingObjectScript*>(script.get())) {
+          shader.vertShader.setUniform("model", script->object.transform.asMatrix4());
+          {
+            shader.fragShader.setUniform("enableCheckerboard", false);
+            glNamedBufferSubData(uniformBuffers[2], 0, materialObject.materialUniformBlock->size, materialObject.uniformStorage.get());
+            glBindBufferRange(GL_UNIFORM_BUFFER, materialObject.materialUniformBlock->binding, uniformBuffers[2], 0, materialObject.materialUniformBlock->size);
+          }
+          glDrawElements(GL_TRIANGLES, 3, GL_UNSIGNED_INT, nullptr);
         }
       }
-      {
-        for (size_t i = 0; i < movingObjects.size(); i++) {
-          objectTransforms.transforms[i] = movingObjects[i]->transform.asMatrix4();
-        }
-        glNamedBufferSubData(uniformBuffers[1], 0, sizeof(glm::mat4x4) * movingObjects.size(), &objectTransforms);
-      }
-      glBindBufferBase(GL_UNIFORM_BUFFER, 1, uniformBuffers[1]);
-      glDrawElementsInstanced(GL_TRIANGLES, 3, GL_UNSIGNED_INT, nullptr, int(movingObjects.size()));
 
       SDL_GL_SwapWindow(m_window);
     }
   }
 
 private:
-  void handleEvents() {
+  void
+  handleEvents() {
     m_input.mousedx = 0.0;
     m_input.mousedy = 0.0;
     for (int scancode = 0; scancode < SDL_NUM_SCANCODES; scancode++) {
