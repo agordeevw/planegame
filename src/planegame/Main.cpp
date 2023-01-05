@@ -241,7 +241,7 @@ struct Mesh {
 
     glCreateVertexArrays(1, &vao);
     GLuint relativeOffset = 0;
-    for (std::size_t i = 0; i < vertexAttributes.size(); i++) {
+    for (uint32_t i = 0; i < vertexAttributes.size(); i++) {
       GLenum type = -1;
       GLuint typeSize = 0;
       switch (vertexAttributes[i].format) {
