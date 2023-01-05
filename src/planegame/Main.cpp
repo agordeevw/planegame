@@ -229,46 +229,56 @@ struct Mesh {
   uint32_t indexCount = 0;
 };
 
-struct Shader {
+struct ShaderProgram {
   struct Options {
-    const char* vertexSource = nullptr;
-    const char* fragmentSource = nullptr;
+    GLenum type;
+    const char* source;
   };
 
-  struct BufferBinding {
-    uint32_t bufferOffset;
-    uint32_t bufferSize;
-    uint32_t bindingIndex;
+  struct UniformBlock {
+    std::string name;
+    GLuint binding;
+    GLuint size;
+    GLuint index;
   };
 
   struct Uniform {
-    uint32_t bufferOffset;
-    uint32_t bufferSize;
+    std::string name;
+    GLint type;
+    GLint size;
+    GLint blockIndex;
+    GLint offset;
+    GLint stride;
+    GLint location;
   };
 
-  void initialize(const Options& options) {
-    programV = glCreateShaderProgramv(GL_VERTEX_SHADER, 1, &options.vertexSource);
-    bool vStatus = checkLinkStatus(programV);
+  bool initialize(const Options& options) {
+    program = glCreateShaderProgramv(options.type, 1, &options.source);
+    bool status = checkLinkStatus(program);
 
-    programF = glCreateShaderProgramv(GL_FRAGMENT_SHADER, 1, &options.fragmentSource);
-    bool fStatus = checkLinkStatus(programF);
-
-    if (vStatus && fStatus) {
-      glCreateProgramPipelines(1, &programPipeline);
-      glUseProgramStages(programPipeline, GL_VERTEX_SHADER_BIT, programV);
-      glUseProgramStages(programPipeline, GL_FRAGMENT_SHADER_BIT, programF);
-
-      listProgramUniforms(programV);
-      listProgramUniforms(programF);
+    if (status) {
+      listProgramUniforms(program);
     }
-    else {
-      throw std::runtime_error("shader failure");
-    }
+    return status;
   }
 
-  GLuint programV = -1;
-  GLuint programF = -1;
-  GLuint programPipeline = -1;
+  const UniformBlock* uniformBlock(const char* name) const {
+    auto it = std::find_if(uniformBlocks.begin(), uniformBlocks.end(), [name](const UniformBlock& block) { return block.name == name; });
+    if (it != uniformBlocks.end())
+      return &(*it);
+    else
+      return nullptr;
+  }
+
+  const Uniform* uniform(const char* name) const {
+    auto it = std::find_if(uniforms.begin(), uniforms.end(), [name](const Uniform& block) { return block.name == name; });
+    if (it != uniforms.end())
+      return &(*it);
+    else
+      return nullptr;
+  }
+
+  GLuint program;
 
 private:
   bool checkLinkStatus(GLuint program) {
@@ -285,56 +295,93 @@ private:
   void listProgramUniforms(GLuint program) {
     GLint numUniformBlocks;
     glGetProgramInterfaceiv(program, GL_UNIFORM_BLOCK, GL_ACTIVE_RESOURCES, &numUniformBlocks);
-    std::vector<GLint> bufferBindings(numUniformBlocks);
-    std::vector<GLint> bufferDataSizes(numUniformBlocks);
+    uniformBlocks.resize(numUniformBlocks);
     for (GLint i = 0; i < numUniformBlocks; i++) {
       char uniformBlockNameBuffer[128];
+      glGetProgramResourceName(program, GL_UNIFORM_BLOCK, i, sizeof(uniformBlockNameBuffer), nullptr, uniformBlockNameBuffer);
+      uniformBlocks[i].name = uniformBlockNameBuffer;
       GLenum props[]{ GL_BUFFER_BINDING, GL_BUFFER_DATA_SIZE };
       const GLuint numProps = sizeof(props) / sizeof(props[0]);
       GLint values[numProps];
-      glGetProgramResourceName(program, GL_UNIFORM_BLOCK, i, sizeof(uniformBlockNameBuffer), nullptr, uniformBlockNameBuffer);
       glGetProgramResourceiv(program, GL_UNIFORM_BLOCK, i, numProps, props, numProps, nullptr, values);
-      printf("UniformBlock %s: binding %d, size %d\n", uniformBlockNameBuffer, values[0], values[1]);
-      bufferBindings[i] = values[0];
-      bufferDataSizes[i] = values[1];
+      uniformBlocks[i].binding = values[0];
+      uniformBlocks[i].size = values[1];
+      uniformBlocks[i].index = i;
     }
 
     GLint numUniforms;
-    std::vector<GLint> uniformTypes;
-    std::vector<GLint> uniformArraySizes;
-    std::vector<GLint> uniformOffsets;
-    std::vector<GLint> uniformBlockIndices;
-    std::vector<GLint> uniformLocations;
     glGetProgramInterfaceiv(program, GL_UNIFORM, GL_ACTIVE_RESOURCES, &numUniforms);
+    uniforms.resize(numUniforms);
     for (GLint i = 0; i < numUniforms; i++) {
       char uniformNameBuffer[128];
+      glGetProgramResourceName(program, GL_UNIFORM, i, sizeof(uniformNameBuffer), nullptr, uniformNameBuffer);
+      uniforms[i].name = uniformNameBuffer;
       GLenum props[]{ GL_TYPE, GL_ARRAY_SIZE, GL_OFFSET, GL_BLOCK_INDEX, GL_ARRAY_STRIDE, GL_LOCATION };
       const GLuint numProps = sizeof(props) / sizeof(props[0]);
       GLint values[numProps];
-      glGetProgramResourceName(program, GL_UNIFORM, i, sizeof(uniformNameBuffer), nullptr, uniformNameBuffer);
       glGetProgramResourceiv(program, GL_UNIFORM, i, numProps, props, numProps, nullptr, values);
-      printf("  Uniform %s: type %d, array_size %d, offset %d, block_index %d, array_stride %d, location %d\n",
-        uniformNameBuffer, values[0], values[1], values[2], values[3], values[4], values[5]);
+      uniforms[i].type = values[0];
+      uniforms[i].size = values[1];
+      uniforms[i].offset = values[2];
+      uniforms[i].blockIndex = values[3];
+      uniforms[i].stride = values[4];
+      uniforms[i].location = values[5];
+    }
+
+    printf("ShaderProgram\n");
+    for (GLint i = 0; i < numUniformBlocks; i++) {
+      printf("  UniformBlock %s: binding %d, size %d\n", uniformBlocks[i].name.c_str(), uniformBlocks[i].binding, uniformBlocks[i].size);
+      for (GLint j = 0; j < numUniforms; j++) {
+        if (uniforms[j].blockIndex != i)
+          continue;
+        printf("    Uniform %s: type %d, array_size %d, offset %d, array_stride %d\n",
+          uniforms[j].name.c_str(), uniforms[j].type, uniforms[j].size, uniforms[j].offset, uniforms[j].stride);
+      }
+    }
+
+    for (GLint i = 0; i < numUniforms; i++) {
+      if (uniforms[i].blockIndex != -i)
+        continue;
+      printf("  Uniform %s: type %d, array_size %d, location %d\n",
+        uniforms[i].name.c_str(), uniforms[i].type, uniforms[i].size, uniforms[i].location);
     }
   }
+
+  std::vector<UniformBlock> uniformBlocks;
+  std::vector<Uniform> uniforms;
+};
+
+struct Shader {
+  struct Options {
+    const char* vertexSource = nullptr;
+    const char* fragmentSource = nullptr;
+  };
+
+  void initialize(const Options& options) {
+    ShaderProgram::Options vertOptions;
+    vertOptions.source = options.vertexSource;
+    vertOptions.type = GL_VERTEX_SHADER;
+    if (!vertShader.initialize(vertOptions))
+      throw std::runtime_error("shader failure");
+
+    ShaderProgram::Options fragOptions;
+    fragOptions.source = options.fragmentSource;
+    fragOptions.type = GL_FRAGMENT_SHADER;
+    if (!fragShader.initialize(fragOptions))
+      throw std::runtime_error("shader failure");
+
+    glCreateProgramPipelines(1, &programPipeline);
+    glUseProgramStages(programPipeline, GL_VERTEX_SHADER_BIT, vertShader.program);
+    glUseProgramStages(programPipeline, GL_FRAGMENT_SHADER_BIT, fragShader.program);
+  }
+
+  ShaderProgram vertShader;
+  ShaderProgram fragShader;
+  GLuint programPipeline = -1;
 };
 
 struct Material {
-  struct BufferBinding {
-    uint32_t bufferOffset;
-    uint32_t bufferSize;
-    uint32_t bindingIndex;
-  };
-
-  struct Uniform {
-    uint32_t bufferOffset;
-    uint32_t bufferSize;
-  };
-
   Shader* shader;
-  std::unique_ptr<char[]> buffer; // data from this buffer is used to update material UBO
-  std::vector<BufferBinding> bufferBindings;
-  std::unordered_map<std::string, Uniform> uniforms;
 };
 
 class MeshRenderer : public Component {
@@ -671,7 +718,7 @@ public:
                                "layout (location = 1) in vec3 color;\n"
                                "out vec4 fragColor;\n"
                                "struct Light { vec3 position; vec3 color; };"
-                               "layout (binding = 3) uniform Lights {\n"
+                               "layout (std140, binding = 3) uniform Lights {\n"
                                "  vec3 positions[128];\n"
                                "  vec3 colors[128];\n"
                                "} lights;\n"
@@ -692,12 +739,12 @@ public:
       shader.initialize(options);
     }
 
-    glUniformBlockBinding(shader.programV, glGetUniformBlockIndex(shader.programV, "ViewProjection"), 0);
-    glUniformBlockBinding(shader.programV, glGetUniformBlockIndex(shader.programV, "Transform"), 1);
-    glUniformBlockBinding(shader.programF, glGetUniformBlockIndex(shader.programF, "Material"), 2);
-    glUniformBlockBinding(shader.programF, glGetUniformBlockIndex(shader.programF, "Lights"), 3);
-    GLuint timeloc = glGetUniformLocation(shader.programF, "time");
-    GLuint numLightsLoc = glGetUniformLocation(shader.programF, "numLights");
+    glUniformBlockBinding(shader.vertShader.program, shader.vertShader.uniformBlock("ViewProjection")->index, 0);
+    glUniformBlockBinding(shader.vertShader.program, shader.vertShader.uniformBlock("Transform")->index, 1);
+    glUniformBlockBinding(shader.fragShader.program, shader.fragShader.uniformBlock("Material")->index, 2);
+    glUniformBlockBinding(shader.fragShader.program, shader.fragShader.uniformBlock("Lights")->index, 3);
+    // GLuint timeloc = shader.fragShader.uniform("time")->location;
+    GLuint numLightsLoc = shader.fragShader.uniform("numLights")->location;
 
     SDL_ShowWindow(m_window);
 
@@ -739,17 +786,12 @@ public:
 
       // Render
 
-      // For each material:
-      //   for each submesh with this material:
-      //     bind submesh vertex buffers and element buffer
-      //     draw elements (instanced)
-
       glEnable(GL_DEPTH_TEST);
       glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
       glBindVertexArray(vertexArray);
       glBindProgramPipeline(shader.programPipeline);
-      glProgramUniform1f(shader.programF, timeloc, m_time.timeSinceStart);
+      // glProgramUniform1f(shader.fragShader.program, timeloc, m_time.timeSinceStart);
 
       glVertexArrayVertexBuffer(vertexArray, binding(0), vertexBufferLand, 0, 8 * sizeof(float));
       glVertexArrayElementBuffer(vertexArray, elementBufferLand);
@@ -782,7 +824,7 @@ public:
         glNamedBufferSubData(uniformBuffers[3], 2048, 32, &colors);
         glBindBufferRange(GL_UNIFORM_BUFFER, 3, uniformBuffers[3], 0, 4096);
       }
-      glProgramUniform1i(shader.programF, numLightsLoc, 2);
+      glProgramUniform1i(shader.fragShader.program, numLightsLoc, 2);
 
       {
         objectTransforms.transforms[0] = landObject->transform.asMatrix4();
