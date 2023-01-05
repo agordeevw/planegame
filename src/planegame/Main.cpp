@@ -263,6 +263,8 @@ struct Mesh {
     glNamedBufferStorage(vertexBuffer, vertexSize * vertexCount, options.vertexBufferData, 0);
     glCreateBuffers(1, &elementBuffer);
     glNamedBufferStorage(elementBuffer, (options.indexFormat == IndexFormat::u32 ? 4 : 2) * indexCount, options.indexBufferData, 0);
+    glVertexArrayVertexBuffer(vao, 0, vertexBuffer, 0, vertexSize);
+    glVertexArrayElementBuffer(vao, elementBuffer);
 
     SubMesh subMesh;
     subMesh.indexStart = 0;
@@ -919,13 +921,9 @@ public:
       glEnable(GL_DEPTH_TEST);
       glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-      glBindVertexArray(landMesh.vao);
       glBindProgramPipeline(shader.programPipeline);
       shader.vertShader.setUniform("time", float(m_time.timeSinceStart));
       shader.fragShader.setUniform("time", float(m_time.timeSinceStart));
-
-      glVertexArrayVertexBuffer(landMesh.vao, 0, landMesh.vertexBuffer, 0, landMesh.vertexSize);
-      glVertexArrayElementBuffer(landMesh.vao, landMesh.elementBuffer);
 
       auto alignedValue = [](uint32_t value, uint32_t alignment) {
         return (value + alignment - 1) & (~(alignment - 1));
@@ -989,11 +987,11 @@ public:
         glBindBufferRange(GL_UNIFORM_BUFFER, materialLand.materialUniformBlock->binding, uniformBuffers[2], 0, materialLand.materialUniformBlock->size);
         shader.fragShader.setUniform("enableCheckerboard", true);
       }
+
+      glBindVertexArray(landMesh.vao);
       glDrawElements(GL_TRIANGLES, landMesh.indexCount, GL_UNSIGNED_INT, nullptr);
 
       glBindVertexArray(objectMesh.vao);
-      glVertexArrayVertexBuffer(objectMesh.vao, 0, objectMesh.vertexBuffer, 0, objectMesh.vertexSize);
-      glVertexArrayElementBuffer(objectMesh.vao, objectMesh.elementBuffer);
 
       for (auto& script : m_scene.scripts.activeScripts) {
         if (dynamic_cast<MovingObjectScript*>(script.get())) {
