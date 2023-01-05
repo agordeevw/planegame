@@ -514,6 +514,13 @@ public:
   std::vector<Material*> materials;
 };
 
+class Light final : public Component {
+public:
+  Light(Object& object) : Component(object) {}
+
+  glm::vec3 color{};
+};
+
 class Scene {
 public:
   Object* makeObject() {
@@ -533,6 +540,9 @@ public:
     }
     else if constexpr (std::is_same_v<T, MeshRenderer>) {
       components.meshRenderers.emplace_back(std::move(component));
+    }
+    else if constexpr (std::is_same_v<T, Light>) {
+      components.lights.emplace_back(std::move(component));
     }
     else {
       static_assert(false, "component type not handled");
@@ -575,6 +585,7 @@ public:
   std::vector<std::unique_ptr<Object>> objects;
   struct Components {
     std::vector<std::unique_ptr<Camera>> cameras;
+    std::vector<std::unique_ptr<Light>> lights;
     std::vector<std::unique_ptr<MeshRenderer>> meshRenderers;
   } components;
   struct Scripts {
@@ -751,29 +762,7 @@ public:
     printf("gl error: %s\n", msg);
   }
 
-  void run() {
-    glEnable(GL_DEBUG_OUTPUT);
-    glDebugMessageCallback(glDebugCallback, this);
-    glDebugMessageControl(GL_DONT_CARE, GL_DONT_CARE, GL_DEBUG_SEVERITY_NOTIFICATION, 0, nullptr, GL_FALSE);
-
-    m_scene.scriptContext.input = &m_input;
-    m_scene.scriptContext.random = &m_random;
-    m_scene.scriptContext.time = &m_time;
-    m_scene.scriptContext.scene = &m_scene;
-    m_scene.scriptContext.resources = &m_resources;
-
-    SDL_GL_GetDrawableSize(m_window, &m_width, &m_height);
-    Object* mainCameraObject = m_scene.makeObject();
-    Camera* mainCamera = mainCameraObject->addComponent<Camera>();
-    mainCamera->aspectRatio = float(m_width) / float(m_height);
-    mainCamera->object.transform.position = glm::vec3{ 0.0, 0.0, 10.0 };
-    mainCamera->isMain = true;
-    mainCamera->fov = glm::radians(100.0f);
-    mainCameraObject->addComponent<FPSCameraScript>();
-
-    Object* movingObjectGeneratorObject = m_scene.makeObject();
-    movingObjectGeneratorObject->addComponent<MovingObjectGeneratorScript>();
-
+  void setUpResources() {
     {
       auto& mesh = m_resources.meshes.emplace_back(std::make_unique<Mesh>());
       Vertex vertices[]{
@@ -874,6 +863,20 @@ public:
     auto& materialObject = m_resources.materials.emplace_back(std::make_unique<Material>());
     materialObject->initialize(m_resources.shaders[0].get());
     materialObject->setValue("Material.color", glm::vec3{ 1.0f, 1.0f, 1.0f });
+  }
+
+  void setUpScene() {
+    Object* mainCameraObject = m_scene.makeObject();
+    Camera* mainCamera = mainCameraObject->addComponent<Camera>();
+    mainCamera->aspectRatio = float(m_width) / float(m_height);
+    mainCamera->object.transform.position = glm::vec3{ 0.0, 0.0, 10.0 };
+    mainCamera->isMain = true;
+    mainCamera->fov = glm::radians(100.0f);
+    mainCameraObject->addComponent<FPSCameraScript>();
+    mainCameraObject->addComponent<Light>()->color = { 3.0f, 3.0f, 3.0f };
+
+    Object* movingObjectGeneratorObject = m_scene.makeObject();
+    movingObjectGeneratorObject->addComponent<MovingObjectGeneratorScript>();
 
     Object* landObject = m_scene.makeObject();
     landObject->transform.position = { 0.0f, -10.0f, 0.0f };
@@ -881,14 +884,29 @@ public:
     landObjectMeshRenderer->mesh = m_resources.meshes[0].get();
     landObjectMeshRenderer->materials.push_back(m_resources.materials[0].get());
 
-    // render (basic):
-    // update scene uniforms (camera, lights)
-    // for each mesh renderer component:
-    //   bind vao for mesh
-    //   for each submesh in mesh:
-    //     bind associated material shader
-    //     update shader uniforms from material
-    //     draw
+    Object* lights[2];
+    lights[0] = m_scene.makeObject();
+    lights[0]->transform.position = { 0.0, 5.0f, 0.0f };
+    lights[0]->addComponent<Light>()->color = { 5.0f, 5.0f, 5.0f };
+    lights[1] = m_scene.makeObject();
+    lights[1]->transform.position = { 2.0, 2.0f, 0.0f };
+    lights[1]->addComponent<Light>()->color = { 3.0f, 0.0f, 0.0f };
+  }
+
+  void run() {
+    glEnable(GL_DEBUG_OUTPUT);
+    glDebugMessageCallback(glDebugCallback, this);
+    glDebugMessageControl(GL_DONT_CARE, GL_DONT_CARE, GL_DEBUG_SEVERITY_NOTIFICATION, 0, nullptr, GL_FALSE);
+
+    m_scene.scriptContext.input = &m_input;
+    m_scene.scriptContext.random = &m_random;
+    m_scene.scriptContext.time = &m_time;
+    m_scene.scriptContext.scene = &m_scene;
+    m_scene.scriptContext.resources = &m_resources;
+    SDL_GL_GetDrawableSize(m_window, &m_width, &m_height);
+
+    setUpResources();
+    setUpScene();
 
     GLint ubOffsetAlignment;
     glGetIntegerv(GL_UNIFORM_BUFFER_OFFSET_ALIGNMENT, &ubOffsetAlignment);
@@ -942,10 +960,6 @@ public:
       glEnable(GL_DEPTH_TEST);
       glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-      auto alignedValue = [](uint32_t value, uint32_t alignment) {
-        return (value + alignment - 1) & (~(alignment - 1));
-      };
-
       struct SceneUniformBufferLayout {
         struct {
           glm::mat4 view;
@@ -970,11 +984,13 @@ public:
       {
         sceneUBOLayout.matrices.view = m_scene.getMainCamera()->viewMatrix4();
         sceneUBOLayout.matrices.projection = m_scene.getMainCamera()->projectionMatrix4();
-        sceneUBOLayout.lights.positions[0].v = { 0.0f, 10.0f * std::sin(m_time.timeSinceStart), 0.0f };
-        sceneUBOLayout.lights.positions[1].v = { 10.0f * std::sin(m_time.timeSinceStart), 10.0f * std::sin(m_time.timeSinceStart), 0.0f };
-        sceneUBOLayout.lights.colors[0].v = { 5.0f, 5.0f, 5.0f };
-        sceneUBOLayout.lights.colors[1].v = { 3.0f, 0.0f, 0.0f };
-        sceneUBOLayout.lights.count = 2;
+        uint32_t lightId = 0;
+        for (auto& light : m_scene.components.lights) {
+          sceneUBOLayout.lights.positions[lightId].v = light->transform.position;
+          sceneUBOLayout.lights.colors[lightId].v = light->color;
+          lightId++;
+        }
+        sceneUBOLayout.lights.count = lightId;
         glNamedBufferSubData(uboScene, 0, sizeof(sceneUBOLayout), &sceneUBOLayout);
         glBindBufferRange(GL_UNIFORM_BUFFER, 0, uboScene, offsetof(SceneUniformBufferLayout, matrices), sizeof(sceneUBOLayout.matrices));
         glBindBufferRange(GL_UNIFORM_BUFFER, 1, uboScene, offsetof(SceneUniformBufferLayout, lights), sizeof(sceneUBOLayout.lights));
