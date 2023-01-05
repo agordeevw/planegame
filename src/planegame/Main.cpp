@@ -13,7 +13,6 @@
 struct Vertex {
   glm::vec3 position;
   glm::vec3 color;
-  glm::vec2 uv;
 };
 
 struct Input {
@@ -189,31 +188,31 @@ private:
 
 struct Mesh {
   struct VertexAttribute {
-    enum class Type {
-      Unknown,
-      Position,
-      Normal,
-      Tangent,
-      Color,
-      UV,
-    };
-
     enum class Format {
       Unknown,
       f16,
       f32,
     };
 
-    Type type = Type::Unknown;
+    VertexAttribute(Format format, int dimension) : format(format), dimension(dimension) {}
+
+    // enum class Type {
+    //   Unknown,
+    //   Position,
+    //   Normal,
+    //   Tangent,
+    //   Color,
+    //   UV,
+    // };
+
+    // Type type = Type::Unknown;
     Format format = Format::Unknown;
     int dimension = -1;
-    int binding = 0;
   };
 
   struct SubMesh {
     uint32_t indexStart = 0;
     uint32_t indexCount = 0;
-    // bounds
   };
 
   enum class IndexFormat {
@@ -222,11 +221,65 @@ struct Mesh {
     u32,
   };
 
+  struct Options {
+    uint32_t vertexCount = 0;
+    uint32_t indexCount = 0;
+    const void* vertexBufferData = nullptr;
+    const void* indexBufferData = nullptr;
+    std::vector<VertexAttribute> attributes;
+    IndexFormat indexFormat = IndexFormat::Unknown;
+  };
+
+  void initialize(const Options& options) {
+    vertexAttributes = options.attributes;
+    vertexCount = options.vertexCount;
+    indexFormat = options.indexFormat;
+    indexCount = options.indexCount;
+
+    glCreateVertexArrays(1, &vao);
+    GLuint relativeOffset = 0;
+    for (std::size_t i = 0; i < vertexAttributes.size(); i++) {
+      GLenum type = -1;
+      GLuint typeSize = 0;
+      switch (vertexAttributes[i].format) {
+        case VertexAttribute::Format::f16:
+          type = GL_HALF_FLOAT;
+          typeSize = 2;
+          break;
+        case VertexAttribute::Format::f32:
+          type = GL_FLOAT;
+          typeSize = 4;
+          break;
+      }
+
+      glEnableVertexArrayAttrib(vao, i);
+      glVertexArrayAttribFormat(vao, i, vertexAttributes[i].dimension, type, GL_FALSE, relativeOffset);
+      glVertexArrayAttribBinding(vao, i, 0);
+      relativeOffset += typeSize * vertexAttributes[i].dimension;
+    }
+    vertexSize = relativeOffset;
+
+    glCreateBuffers(1, &vertexBuffer);
+    glNamedBufferStorage(vertexBuffer, vertexSize * vertexCount, options.vertexBufferData, 0);
+    glCreateBuffers(1, &elementBuffer);
+    glNamedBufferStorage(elementBuffer, (options.indexFormat == IndexFormat::u32 ? 4 : 2) * indexCount, options.indexBufferData, 0);
+
+    SubMesh subMesh;
+    subMesh.indexStart = 0;
+    subMesh.indexCount = options.indexCount;
+    submeshes.push_back(subMesh);
+  }
+
   std::vector<SubMesh> submeshes;
   std::vector<VertexAttribute> vertexAttributes;
   uint32_t vertexCount = 0;
   IndexFormat indexFormat = IndexFormat::Unknown;
   uint32_t indexCount = 0;
+  uint32_t vertexSize = 0;
+
+  GLuint vao = -1;
+  GLuint vertexBuffer = -1;
+  GLuint elementBuffer = -1;
 };
 
 struct ShaderProgram {
@@ -697,69 +750,50 @@ public:
     Object* landObject = m_scene.makeObject();
     landObject->transform.position = { 0.0f, -10.0f, 0.0f };
 
-    GLuint vertexBufferLand;
-    glCreateBuffers(1, &vertexBufferLand);
-    Vertex landPoints[]{
-      Vertex{ { -100.0f, 0.0f, -100.0f }, { 0.2f, 0.5f, 0.2f } },
-      Vertex{ { 100.0f, 0.0f, -100.0f }, { 0.2f, 0.5f, 0.2f } },
-      Vertex{ { 100.0f, 0.0f, 100.0f }, { 0.2f, 0.5f, 0.2f } },
-      Vertex{ { -100.0f, 0.0f, 100.0f }, { 0.2f, 0.5f, 0.2f } },
-    };
-    glNamedBufferData(vertexBufferLand, sizeof(landPoints), landPoints, GL_STATIC_DRAW);
-
-    GLuint elementBufferLand;
-    glCreateBuffers(1, &elementBufferLand);
-    uint32_t indicesLand[]{ 0, 2, 1, 0, 3, 2 };
-    glNamedBufferData(elementBufferLand, sizeof(indicesLand), indicesLand, GL_STATIC_DRAW);
-
-    GLuint vertexBuffer;
-    glCreateBuffers(1, &vertexBuffer);
-    Vertex points[]{
-      Vertex{ { -1.0, -1.0, 0.0 }, { 1.0, 0.0, 0.0 } },
-      Vertex{ { 1.0, -1.0, 0.0 }, { 0.0, 1.0, 0.0 } },
-      Vertex{ { 0.0, 1.0, 0.0 }, { 0.0, 0.0, 1.0 } }
-    };
-    glNamedBufferData(vertexBuffer, sizeof(points), points, GL_STATIC_DRAW);
-
-    GLuint elementBuffer;
-    glCreateBuffers(1, &elementBuffer);
-    uint32_t indices[]{ 0, 1, 2 };
-    glNamedBufferData(elementBuffer, sizeof(indices), indices, GL_STATIC_DRAW);
-
-    GLint ubOffsetAlignment;
-    glGetIntegerv(GL_UNIFORM_BUFFER_OFFSET_ALIGNMENT, &ubOffsetAlignment);
-    GLuint uniformBuffers[3];
-    glCreateBuffers(3, uniformBuffers);
-    glNamedBufferData(uniformBuffers[0], 64 * 1024, nullptr, GL_DYNAMIC_DRAW);
-    glNamedBufferData(uniformBuffers[1], 64 * 1024, nullptr, GL_DYNAMIC_DRAW);
-    glNamedBufferData(uniformBuffers[2], 64 * 1024, nullptr, GL_DYNAMIC_DRAW);
-    std::vector<char> uniformBufferStorage[3];
-    uniformBufferStorage[0].resize(64 * 1024);
-    uniformBufferStorage[1].resize(64 * 1024);
-    uniformBufferStorage[2].resize(64 * 1024);
-
-    GLuint vertexArray;
-    glCreateVertexArrays(1, &vertexArray);
+    Mesh landMesh;
     {
-      glEnableVertexArrayAttrib(vertexArray, attrib(0));
-      glVertexArrayAttribFormat(vertexArray, attrib(0), 3, GL_FLOAT, GL_FALSE, 0);
-      glVertexArrayAttribBinding(vertexArray, attrib(0), binding(0));
-      glEnableVertexArrayAttrib(vertexArray, attrib(1));
-      glVertexArrayAttribFormat(vertexArray, attrib(1), 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float));
-      glVertexArrayAttribBinding(vertexArray, attrib(1), binding(0));
-      glEnableVertexArrayAttrib(vertexArray, attrib(2));
-      glVertexArrayAttribFormat(vertexArray, attrib(2), 2, GL_FLOAT, GL_FALSE, 6 * sizeof(float));
-      glVertexArrayAttribBinding(vertexArray, attrib(2), binding(0));
+      Vertex points[]{
+        Vertex{ { -100.0f, 0.0f, -100.0f }, { 0.2f, 0.5f, 0.2f } },
+        Vertex{ { 100.0f, 0.0f, -100.0f }, { 0.2f, 0.5f, 0.2f } },
+        Vertex{ { 100.0f, 0.0f, 100.0f }, { 0.2f, 0.5f, 0.2f } },
+        Vertex{ { -100.0f, 0.0f, 100.0f }, { 0.2f, 0.5f, 0.2f } },
+      };
+      uint32_t indices[]{ 0, 2, 1, 0, 3, 2 };
+
+      Mesh::Options options;
+      options.attributes = {
+        Mesh::VertexAttribute(Mesh::VertexAttribute::Format::f32, 3),
+        Mesh::VertexAttribute(Mesh::VertexAttribute::Format::f32, 3)
+      };
+      options.indexBufferData = indices;
+      options.indexCount = 6;
+      options.indexFormat = Mesh::IndexFormat::u32;
+      options.vertexBufferData = points;
+      options.vertexCount = 4;
+      landMesh.initialize(options);
     }
 
-    // render (basic):
-    // update scene uniforms (camera, lights)
-    // for each mesh renderer component:
-    //   bind vao for mesh
-    //   for each submesh in mesh:
-    //     bind associated material shader
-    //     update shader uniforms from material
-    //     draw
+    Mesh objectMesh;
+    {
+      Vertex points[]{
+        Vertex{ { -1.0, -1.0, 0.0 }, { 1.0, 0.0, 0.0 } },
+        Vertex{ { 1.0, -1.0, 0.0 }, { 0.0, 1.0, 0.0 } },
+        Vertex{ { 0.0, 1.0, 0.0 }, { 0.0, 0.0, 1.0 } }
+      };
+      uint32_t indices[]{ 0, 1, 2 };
+
+      Mesh::Options options;
+      options.attributes = {
+        Mesh::VertexAttribute(Mesh::VertexAttribute::Format::f32, 3),
+        Mesh::VertexAttribute(Mesh::VertexAttribute::Format::f32, 3)
+      };
+      options.indexBufferData = indices;
+      options.indexCount = 3;
+      options.indexFormat = Mesh::IndexFormat::u32;
+      options.vertexBufferData = points;
+      options.vertexCount = 3;
+      objectMesh.initialize(options);
+    }
 
     Shader shader;
     {
@@ -821,6 +855,27 @@ public:
     materialObject.initialize(&shader);
     materialObject.setValue("Material.color", glm::vec3{ 1.0f, 1.0f, 1.0f });
 
+    // render (basic):
+    // update scene uniforms (camera, lights)
+    // for each mesh renderer component:
+    //   bind vao for mesh
+    //   for each submesh in mesh:
+    //     bind associated material shader
+    //     update shader uniforms from material
+    //     draw
+
+    GLint ubOffsetAlignment;
+    glGetIntegerv(GL_UNIFORM_BUFFER_OFFSET_ALIGNMENT, &ubOffsetAlignment);
+    GLuint uniformBuffers[3];
+    glCreateBuffers(3, uniformBuffers);
+    glNamedBufferData(uniformBuffers[0], 64 * 1024, nullptr, GL_DYNAMIC_DRAW);
+    glNamedBufferData(uniformBuffers[1], 64 * 1024, nullptr, GL_DYNAMIC_DRAW);
+    glNamedBufferData(uniformBuffers[2], 64 * 1024, nullptr, GL_DYNAMIC_DRAW);
+    std::vector<char> uniformBufferStorage[3];
+    uniformBufferStorage[0].resize(64 * 1024);
+    uniformBufferStorage[1].resize(64 * 1024);
+    uniformBufferStorage[2].resize(64 * 1024);
+
     SDL_ShowWindow(m_window);
 
     SDL_bool relativeMouseMode = SDL_TRUE;
@@ -864,13 +919,13 @@ public:
       glEnable(GL_DEPTH_TEST);
       glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-      glBindVertexArray(vertexArray);
+      glBindVertexArray(landMesh.vao);
       glBindProgramPipeline(shader.programPipeline);
       shader.vertShader.setUniform("time", float(m_time.timeSinceStart));
       shader.fragShader.setUniform("time", float(m_time.timeSinceStart));
 
-      glVertexArrayVertexBuffer(vertexArray, binding(0), vertexBufferLand, 0, 8 * sizeof(float));
-      glVertexArrayElementBuffer(vertexArray, elementBufferLand);
+      glVertexArrayVertexBuffer(landMesh.vao, 0, landMesh.vertexBuffer, 0, landMesh.vertexSize);
+      glVertexArrayElementBuffer(landMesh.vao, landMesh.elementBuffer);
 
       auto alignedValue = [](uint32_t value, uint32_t alignment) {
         return (value + alignment - 1) & (~(alignment - 1));
@@ -934,11 +989,11 @@ public:
         glBindBufferRange(GL_UNIFORM_BUFFER, materialLand.materialUniformBlock->binding, uniformBuffers[2], 0, materialLand.materialUniformBlock->size);
         shader.fragShader.setUniform("enableCheckerboard", true);
       }
+      glDrawElements(GL_TRIANGLES, landMesh.indexCount, GL_UNSIGNED_INT, nullptr);
 
-      glDrawElementsInstanced(GL_TRIANGLES, 6, GL_UNSIGNED_INT, nullptr, 1);
-
-      glVertexArrayVertexBuffer(vertexArray, binding(0), vertexBuffer, 0, 8 * sizeof(float));
-      glVertexArrayElementBuffer(vertexArray, elementBuffer);
+      glBindVertexArray(objectMesh.vao);
+      glVertexArrayVertexBuffer(objectMesh.vao, 0, objectMesh.vertexBuffer, 0, objectMesh.vertexSize);
+      glVertexArrayElementBuffer(objectMesh.vao, objectMesh.elementBuffer);
 
       for (auto& script : m_scene.scripts.activeScripts) {
         if (dynamic_cast<MovingObjectScript*>(script.get())) {
@@ -948,7 +1003,7 @@ public:
             glNamedBufferSubData(uniformBuffers[2], 0, materialObject.materialUniformBlock->size, materialObject.uniformStorage.get());
             glBindBufferRange(GL_UNIFORM_BUFFER, materialObject.materialUniformBlock->binding, uniformBuffers[2], 0, materialObject.materialUniformBlock->size);
           }
-          glDrawElements(GL_TRIANGLES, 3, GL_UNSIGNED_INT, nullptr);
+          glDrawElements(GL_TRIANGLES, objectMesh.indexCount, GL_UNSIGNED_INT, nullptr);
         }
       }
 
@@ -957,8 +1012,7 @@ public:
   }
 
 private:
-  void
-  handleEvents() {
+  void handleEvents() {
     m_input.mousedx = 0.0;
     m_input.mousedy = 0.0;
     for (int scancode = 0; scancode < SDL_NUM_SCANCODES; scancode++) {
