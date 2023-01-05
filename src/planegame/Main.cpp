@@ -95,8 +95,8 @@ public:
 
   template <class T>
   T* addComponent() {
-    static_assert(std::is_base_of_v<Component, T>);
-    static_assert(std::is_final_v<T>);
+    static_assert(std::is_base_of_v<Component, T>, "T must be derived from Component");
+    static_assert(std::is_final_v<T>, "T must be final");
     std::unique_ptr<T> component;
     component = std::make_unique<T>(*this);
     T* ret = component.get();
@@ -158,12 +158,14 @@ public:
 };
 
 class Scene;
+class Resources;
 
 struct ScriptContext {
   Scene* scene;
   const Input* input;
   const Time* time;
   Random* random;
+  Resources* resources;
 };
 
 class Script : public Component {
@@ -179,6 +181,7 @@ public:
   const Input& input() { return *m_context.input; }
   const Time& time() { return *m_context.time; }
   Random& random() { return *m_context.random; }
+  Resources& resources() { return *m_context.resources; }
 
 private:
   friend class Scene;
@@ -503,8 +506,10 @@ struct Material {
   std::unique_ptr<char[]> uniformStorage;
 };
 
-class MeshRenderer : public Component {
+class MeshRenderer final : public Component {
 public:
+  MeshRenderer(Object& object) : Component(object) {}
+
   Mesh* mesh;
   std::vector<Material*> materials;
 };
@@ -525,6 +530,9 @@ public:
     }
     else if constexpr (std::is_same_v<T, Camera>) {
       components.cameras.emplace_back(std::move(component));
+    }
+    else if constexpr (std::is_same_v<T, MeshRenderer>) {
+      components.meshRenderers.emplace_back(std::move(component));
     }
     else {
       static_assert(false, "component type not handled");
@@ -558,6 +566,7 @@ public:
     };
 
     deleteTagged(components.cameras);
+    deleteTagged(components.meshRenderers);
     deleteTagged(scripts.activeScripts);
 
     deleteTagged(objects);
@@ -566,12 +575,20 @@ public:
   std::vector<std::unique_ptr<Object>> objects;
   struct Components {
     std::vector<std::unique_ptr<Camera>> cameras;
+    std::vector<std::unique_ptr<MeshRenderer>> meshRenderers;
   } components;
   struct Scripts {
     std::vector<std::unique_ptr<Script>> activeScripts;
     std::vector<std::unique_ptr<Script>> pendingScripts;
   } scripts;
   ScriptContext scriptContext;
+};
+
+class Resources {
+public:
+  std::vector<std::unique_ptr<Mesh>> meshes;
+  std::vector<std::unique_ptr<Shader>> shaders;
+  std::vector<std::unique_ptr<Material>> materials;
 };
 
 class FPSCameraScript final : public Script {
@@ -650,9 +667,19 @@ public:
     if (input().keyPressed[SDL_SCANCODE_SPACE]) {
       Object* newObject = scene().makeObject();
       newObject->addComponent<MovingObjectScript>();
+      {
+        MeshRenderer* meshRenderer = newObject->addComponent<MeshRenderer>();
+        meshRenderer->mesh = resources().meshes[1].get();
+        meshRenderer->materials = { resources().materials[1].get() };
+      }
       generatedObjects.push_back(newObject);
       Object* newObjectParent = scene().makeObject();
       newObjectParent->addComponent<MovingObjectScript>();
+      {
+        MeshRenderer* meshRenderer = newObjectParent->addComponent<MeshRenderer>();
+        meshRenderer->mesh = resources().meshes[1].get();
+        meshRenderer->materials = { resources().materials[1].get() };
+      }
       newObjectParent->addChild(newObject);
       generatedObjects.push_back(newObjectParent);
     }
@@ -720,9 +747,6 @@ public:
     SDL_Quit();
   }
 
-  GLuint attrib(GLuint idx) { return idx; }
-  GLuint binding(GLuint idx) { return idx; }
-
   static void glDebugCallback(GLenum src, GLenum type, GLuint id, GLenum severity, GLsizei length, GLchar const* msg, void const* user_param) {
     printf("gl error: %s\n", msg);
   }
@@ -736,6 +760,7 @@ public:
     m_scene.scriptContext.random = &m_random;
     m_scene.scriptContext.time = &m_time;
     m_scene.scriptContext.scene = &m_scene;
+    m_scene.scriptContext.resources = &m_resources;
 
     SDL_GL_GetDrawableSize(m_window, &m_width, &m_height);
     Object* mainCameraObject = m_scene.makeObject();
@@ -749,12 +774,9 @@ public:
     Object* movingObjectGeneratorObject = m_scene.makeObject();
     movingObjectGeneratorObject->addComponent<MovingObjectGeneratorScript>();
 
-    Object* landObject = m_scene.makeObject();
-    landObject->transform.position = { 0.0f, -10.0f, 0.0f };
-
-    Mesh landMesh;
     {
-      Vertex points[]{
+      auto& mesh = m_resources.meshes.emplace_back(std::make_unique<Mesh>());
+      Vertex vertices[]{
         Vertex{ { -100.0f, 0.0f, -100.0f }, { 0.2f, 0.5f, 0.2f } },
         Vertex{ { 100.0f, 0.0f, -100.0f }, { 0.2f, 0.5f, 0.2f } },
         Vertex{ { 100.0f, 0.0f, 100.0f }, { 0.2f, 0.5f, 0.2f } },
@@ -770,14 +792,14 @@ public:
       options.indexBufferData = indices;
       options.indexCount = 6;
       options.indexFormat = Mesh::IndexFormat::u32;
-      options.vertexBufferData = points;
+      options.vertexBufferData = vertices;
       options.vertexCount = 4;
-      landMesh.initialize(options);
+      mesh->initialize(options);
     }
 
-    Mesh objectMesh;
     {
-      Vertex points[]{
+      auto& mesh = m_resources.meshes.emplace_back(std::make_unique<Mesh>());
+      Vertex vertices[]{
         Vertex{ { -1.0, -1.0, 0.0 }, { 1.0, 0.0, 0.0 } },
         Vertex{ { 1.0, -1.0, 0.0 }, { 0.0, 1.0, 0.0 } },
         Vertex{ { 0.0, 1.0, 0.0 }, { 0.0, 0.0, 1.0 } }
@@ -792,18 +814,17 @@ public:
       options.indexBufferData = indices;
       options.indexCount = 3;
       options.indexFormat = Mesh::IndexFormat::u32;
-      options.vertexBufferData = points;
+      options.vertexBufferData = vertices;
       options.vertexCount = 3;
-      objectMesh.initialize(options);
+      mesh->initialize(options);
     }
 
-    Shader shader;
     {
+      auto& shader = m_resources.shaders.emplace_back(std::make_unique<Shader>());
       Shader::Options options{};
       options.vertexSource = "#version 460\n"
                              "layout (location = 0) in vec3 inPosition;\n"
                              "layout (location = 1) in vec3 inColor;\n"
-                             "layout (location = 2) in vec2 inUV;\n"
                              "layout (location = 0) out vec3 position;\n"
                              "layout (location = 1) out vec3 color;\n"
                              "out gl_PerVertex {\n"
@@ -830,32 +851,35 @@ public:
                                "layout (std140, binding = 1) uniform Lights {\n"
                                "  vec3 positions[128];\n"
                                "  vec3 colors[128];\n"
+                               "  int count;\n"
                                "} lights;\n"
                                "layout (std140, binding = 2) uniform Material {\n"
                                "  vec3 color;\n"
                                "  vec3 ambient;\n"
                                "} material;\n"
                                "uniform float time;"
-                               "uniform int numLights;"
-                               "uniform bool enableCheckerboard;"
                                "void main() {\n"
                                "  float surfColorMul = 1.0;\n"
-                               "  if (enableCheckerboard && ((int(0.5 * position.x) + int(0.5 * position.z)) & 1) == 1)\n"
-                               "    surfColorMul = 0.5;\n"
                                "  vec3 lightsColor = vec3(0.0,0.0,0.0);\n"
-                               "  for (int i = 0; i < numLights; i++) { lightsColor += lights.colors[i] / (1.0 + length(position - lights.positions[i])); }"
+                               "  for (int i = 0; i < lights.count; i++) { lightsColor += lights.colors[i] / (1.0 + length(position - lights.positions[i])); }"
                                "  fragColor = vec4(surfColorMul * material.color * (material.ambient + lightsColor), 1.0);\n"
                                "}";
-      shader.initialize(options);
+      shader->initialize(options);
     }
 
-    Material materialLand;
-    materialLand.initialize(&shader);
-    materialLand.setValue("Material.color", glm::vec3{ 0.0f, 1.0f, 0.0f });
+    auto& materialLand = m_resources.materials.emplace_back(std::make_unique<Material>());
+    materialLand->initialize(m_resources.shaders[0].get());
+    materialLand->setValue("Material.color", glm::vec3{ 0.0f, 1.0f, 0.0f });
 
-    Material materialObject;
-    materialObject.initialize(&shader);
-    materialObject.setValue("Material.color", glm::vec3{ 1.0f, 1.0f, 1.0f });
+    auto& materialObject = m_resources.materials.emplace_back(std::make_unique<Material>());
+    materialObject->initialize(m_resources.shaders[0].get());
+    materialObject->setValue("Material.color", glm::vec3{ 1.0f, 1.0f, 1.0f });
+
+    Object* landObject = m_scene.makeObject();
+    landObject->transform.position = { 0.0f, -10.0f, 0.0f };
+    MeshRenderer* landObjectMeshRenderer = landObject->addComponent<MeshRenderer>();
+    landObjectMeshRenderer->mesh = m_resources.meshes[0].get();
+    landObjectMeshRenderer->materials.push_back(m_resources.materials[0].get());
 
     // render (basic):
     // update scene uniforms (camera, lights)
@@ -868,15 +892,12 @@ public:
 
     GLint ubOffsetAlignment;
     glGetIntegerv(GL_UNIFORM_BUFFER_OFFSET_ALIGNMENT, &ubOffsetAlignment);
-    GLuint uniformBuffers[3];
-    glCreateBuffers(3, uniformBuffers);
+    GLuint uniformBuffers[2];
+    glCreateBuffers(2, uniformBuffers);
     glNamedBufferData(uniformBuffers[0], 64 * 1024, nullptr, GL_DYNAMIC_DRAW);
     glNamedBufferData(uniformBuffers[1], 64 * 1024, nullptr, GL_DYNAMIC_DRAW);
-    glNamedBufferData(uniformBuffers[2], 64 * 1024, nullptr, GL_DYNAMIC_DRAW);
-    std::vector<char> uniformBufferStorage[3];
-    uniformBufferStorage[0].resize(64 * 1024);
-    uniformBufferStorage[1].resize(64 * 1024);
-    uniformBufferStorage[2].resize(64 * 1024);
+    GLuint uboScene = uniformBuffers[0];
+    GLuint uboMaterial = uniformBuffers[1];
 
     SDL_ShowWindow(m_window);
 
@@ -897,7 +918,7 @@ public:
       m_time.dt = float(delta);
       ticksLast = ticksNow;
 
-      // Update components
+      // Update
       {
         if (m_input.keyDown[SDL_SCANCODE_LCTRL] && m_input.keyPressed[SDL_SCANCODE_C]) {
           relativeMouseMode = relativeMouseMode == SDL_TRUE ? SDL_FALSE : SDL_TRUE;
@@ -921,89 +942,60 @@ public:
       glEnable(GL_DEPTH_TEST);
       glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-      glBindProgramPipeline(shader.programPipeline);
-      shader.vertShader.setUniform("time", float(m_time.timeSinceStart));
-      shader.fragShader.setUniform("time", float(m_time.timeSinceStart));
-
       auto alignedValue = [](uint32_t value, uint32_t alignment) {
         return (value + alignment - 1) & (~(alignment - 1));
       };
 
-      // Set up scene objects
+      struct SceneUniformBufferLayout {
+        struct {
+          glm::mat4 view;
+          glm::mat4 projection;
+        } matrices;
+        char pad0[128];
+        struct Lights {
+          struct {
+            glm::vec3 v;
+            char pad[4];
+          } positions[128];
+          struct {
+            glm::vec3 v;
+            char pad[4];
+          } colors[128];
+          int32_t count;
+          char pad[12];
+        } lights;
+      } sceneUBOLayout;
+
+      // Set up scene uniform
       {
-        char* uniformBuffer0 = uniformBufferStorage[0].data();
-        char* viewProjectionSubBuffer = uniformBuffer0;
-        uint64_t viewProjectionSubBufferSize = alignedValue(shader.vertShader.getUniformBlock("ViewProjection")->size, ubOffsetAlignment);
-        uint64_t viewProjectionSubBufferOffset = viewProjectionSubBuffer - uniformBuffer0;
-
-        {
-          glm::mat4 view = m_scene.getMainCamera()->viewMatrix4();
-          glm::mat4 projection = m_scene.getMainCamera()->projectionMatrix4();
-          memcpy(viewProjectionSubBuffer + shader.vertShader.getUniformBlock("ViewProjection")->getEntry("view")->offset, &view, sizeof(view));
-          memcpy(viewProjectionSubBuffer + shader.vertShader.getUniformBlock("ViewProjection")->getEntry("projection")->offset, &projection, sizeof(projection));
-        }
-
-        char* lightsSubBuffer = viewProjectionSubBuffer + viewProjectionSubBufferSize;
-        uint64_t lightsSubBufferSize = alignedValue(shader.fragShader.getUniformBlock("Lights")->size, ubOffsetAlignment);
-        uint64_t lightsSubBufferOffset = lightsSubBuffer - uniformBuffer0;
-
-        {
-          const int numLights = 2;
-          glm::vec3 positions[numLights]{
-            { 0.0f, 10.0f * std::sin(m_time.timeSinceStart), 0.0f },
-            { 10.0f * std::sin(m_time.timeSinceStart), 10.0f * std::sin(m_time.timeSinceStart), 0.0f }
-          };
-          glm::vec3 colors[numLights]{
-            { 5.0f, 5.0f, 5.0f },
-            { 3.0f, 0.0f, 0.0f }
-          };
-
-          for (int i = 0; i < numLights; i++) {
-            auto positionEntry = shader.fragShader.getUniformBlock("Lights")->getEntry("Lights.positions[0]");
-            auto colorEntry = shader.fragShader.getUniformBlock("Lights")->getEntry("Lights.colors[0]");
-            memcpy(lightsSubBuffer + positionEntry->offset + i * positionEntry->stride, &positions[i], sizeof(positions[i]));
-            memcpy(lightsSubBuffer + colorEntry->offset + i * colorEntry->stride, &colors[i], sizeof(colors[i]));
-          }
-          shader.fragShader.setUniform("numLights", numLights);
-        }
-
-        char* uniformBuffer0End = lightsSubBuffer + lightsSubBufferSize;
-
-        uint64_t uniformBuffer0Size = uniformBuffer0End - uniformBuffer0;
-
-        glNamedBufferSubData(uniformBuffers[0], 0, uniformBuffer0Size, uniformBuffer0);
-
-        glBindBufferRange(GL_UNIFORM_BUFFER, shader.vertShader.getUniformBlock("ViewProjection")->binding, uniformBuffers[0], viewProjectionSubBufferOffset, viewProjectionSubBufferSize);
-        glBindBufferRange(GL_UNIFORM_BUFFER, shader.fragShader.getUniformBlock("Lights")->binding, uniformBuffers[0], lightsSubBufferOffset, lightsSubBufferSize);
+        sceneUBOLayout.matrices.view = m_scene.getMainCamera()->viewMatrix4();
+        sceneUBOLayout.matrices.projection = m_scene.getMainCamera()->projectionMatrix4();
+        sceneUBOLayout.lights.positions[0].v = { 0.0f, 10.0f * std::sin(m_time.timeSinceStart), 0.0f };
+        sceneUBOLayout.lights.positions[1].v = { 10.0f * std::sin(m_time.timeSinceStart), 10.0f * std::sin(m_time.timeSinceStart), 0.0f };
+        sceneUBOLayout.lights.colors[0].v = { 5.0f, 5.0f, 5.0f };
+        sceneUBOLayout.lights.colors[1].v = { 3.0f, 0.0f, 0.0f };
+        sceneUBOLayout.lights.count = 2;
+        glNamedBufferSubData(uboScene, 0, sizeof(sceneUBOLayout), &sceneUBOLayout);
+        glBindBufferRange(GL_UNIFORM_BUFFER, 0, uboScene, offsetof(SceneUniformBufferLayout, matrices), sizeof(sceneUBOLayout.matrices));
+        glBindBufferRange(GL_UNIFORM_BUFFER, 1, uboScene, offsetof(SceneUniformBufferLayout, lights), sizeof(sceneUBOLayout.lights));
       }
 
-      shader.vertShader.setUniform("model", landObject->transform.asMatrix4());
-      char* uniformBuffer2 = uniformBufferStorage[2].data();
-      char* materialSubBuffer = uniformBuffer2;
-      uint32_t materialSubBufferSize = alignedValue(shader.fragShader.getUniformBlock("Material")->size, ubOffsetAlignment);
-
-      {
-        glNamedBufferSubData(uniformBuffers[2], 0, materialLand.materialUniformBlock->size, materialLand.uniformStorage.get());
-        glBindBufferRange(GL_UNIFORM_BUFFER, materialLand.materialUniformBlock->binding, uniformBuffers[2], 0, materialLand.materialUniformBlock->size);
-        shader.fragShader.setUniform("enableCheckerboard", true);
-      }
-
-      glBindVertexArray(landMesh.vao);
-      glDrawElements(GL_TRIANGLES, landMesh.indexCount, GL_UNSIGNED_INT, nullptr);
-
-      glBindVertexArray(objectMesh.vao);
-
-      for (auto& script : m_scene.scripts.activeScripts) {
-        if (dynamic_cast<MovingObjectScript*>(script.get())) {
-          shader.vertShader.setUniform("model", script->object.transform.asMatrix4());
-          {
-            shader.fragShader.setUniform("enableCheckerboard", false);
-            glNamedBufferSubData(uniformBuffers[2], 0, materialObject.materialUniformBlock->size, materialObject.uniformStorage.get());
-            glBindBufferRange(GL_UNIFORM_BUFFER, materialObject.materialUniformBlock->binding, uniformBuffers[2], 0, materialObject.materialUniformBlock->size);
-          }
-          glDrawElements(GL_TRIANGLES, objectMesh.indexCount, GL_UNSIGNED_INT, nullptr);
+      for (auto& meshRenderer : m_scene.components.meshRenderers) {
+        glBindVertexArray(meshRenderer->mesh->vao);
+        std::size_t i = 0;
+        for (const Mesh::SubMesh& submesh : meshRenderer->mesh->submeshes) {
+          const Material& material = *meshRenderer->materials[i];
+          glBindProgramPipeline(material.shader->programPipeline);
+          glNamedBufferSubData(uboMaterial, 0, material.materialUniformBlock->size, material.uniformStorage.get());
+          glBindBufferRange(GL_UNIFORM_BUFFER, 2, uboMaterial, 0, material.materialUniformBlock->size);
+          material.shader->vertShader.setUniform("model", meshRenderer->transform.asMatrix4());
+          material.shader->vertShader.setUniform("time", float(m_time.timeSinceStart));
+          material.shader->fragShader.setUniform("time", float(m_time.timeSinceStart));
+          glDrawElements(GL_TRIANGLES, submesh.indexCount, GL_UNSIGNED_INT, reinterpret_cast<void*>(submesh.indexStart * sizeof(uint32_t)));
         }
       }
+      glBindVertexArray(0);
+      glBindProgramPipeline(0);
 
       SDL_GL_SwapWindow(m_window);
     }
@@ -1064,6 +1056,7 @@ private:
   Time m_time;
   Scene m_scene;
   Random m_random;
+  Resources m_resources;
 };
 
 int main(int, char**) {
