@@ -576,6 +576,7 @@ public:
     };
 
     deleteTagged(components.cameras);
+    deleteTagged(components.lights);
     deleteTagged(components.meshRenderers);
     deleteTagged(scripts.activeScripts);
 
@@ -597,9 +598,60 @@ public:
 
 class Resources {
 public:
+  template <class T, class... Args>
+  T* create(std::string name, Args&&... args) {
+    auto res = std::make_unique<T>(std::forward<Args>(args)...);
+    T* ret = res.get();
+    auto addResource = [&name, &res](auto& resourceVector, std::unordered_map<std::string, std::size_t>& mapNameToResourceIdx) {
+      mapNameToResourceIdx[std::move(name)] = resourceVector.size();
+      resourceVector.push_back(std::move(res));
+    };
+
+    if constexpr (std::is_same_v<T, Mesh>) {
+      addResource(meshes, nameToMeshIdx);
+    }
+    else if constexpr (std::is_same_v<T, Shader>) {
+      addResource(shaders, nameToShaderIdx);
+    }
+    else if constexpr (std::is_same_v<T, Material>) {
+      addResource(materials, nameToMaterialIdx);
+    }
+    else {
+      static_assert(false, "Resource type not handled");
+    }
+
+    return ret;
+  }
+
+  template <class T>
+  T* get(const std::string& name) {
+    auto getResource = [&name](auto& resourceVector, std::unordered_map<std::string, std::size_t>& mapNameToResourceIdx) {
+      return resourceVector[mapNameToResourceIdx.at(name)].get();
+    };
+
+    T* ret;
+    if constexpr (std::is_same_v<T, Mesh>) {
+      ret = getResource(meshes, nameToMeshIdx);
+    }
+    else if constexpr (std::is_same_v<T, Shader>) {
+      ret = getResource(shaders, nameToShaderIdx);
+    }
+    else if constexpr (std::is_same_v<T, Material>) {
+      ret = getResource(materials, nameToMaterialIdx);
+    }
+    else {
+      static_assert(false, "Resource type not handled");
+    }
+    return ret;
+  }
+
+private:
   std::vector<std::unique_ptr<Mesh>> meshes;
   std::vector<std::unique_ptr<Shader>> shaders;
   std::vector<std::unique_ptr<Material>> materials;
+  std::unordered_map<std::string, std::size_t> nameToMeshIdx;
+  std::unordered_map<std::string, std::size_t> nameToShaderIdx;
+  std::unordered_map<std::string, std::size_t> nameToMaterialIdx;
 };
 
 class FPSCameraScript final : public Script {
@@ -680,16 +732,16 @@ public:
       newObject->addComponent<MovingObjectScript>();
       {
         MeshRenderer* meshRenderer = newObject->addComponent<MeshRenderer>();
-        meshRenderer->mesh = resources().meshes[1].get();
-        meshRenderer->materials = { resources().materials[1].get() };
+        meshRenderer->mesh = resources().get<Mesh>("object");
+        meshRenderer->materials = { resources().get<Material>("default.object") };
       }
       generatedObjects.push_back(newObject);
       Object* newObjectParent = scene().makeObject();
       newObjectParent->addComponent<MovingObjectScript>();
       {
         MeshRenderer* meshRenderer = newObjectParent->addComponent<MeshRenderer>();
-        meshRenderer->mesh = resources().meshes[1].get();
-        meshRenderer->materials = { resources().materials[1].get() };
+        meshRenderer->mesh = resources().get<Mesh>("object");
+        meshRenderer->materials = { resources().get<Material>("default.object") };
       }
       newObjectParent->addChild(newObject);
       generatedObjects.push_back(newObjectParent);
@@ -764,7 +816,7 @@ public:
 
   void setUpResources() {
     {
-      auto& mesh = m_resources.meshes.emplace_back(std::make_unique<Mesh>());
+      auto mesh = m_resources.create<Mesh>("land");
       Vertex vertices[]{
         Vertex{ { -100.0f, 0.0f, -100.0f }, { 0.2f, 0.5f, 0.2f } },
         Vertex{ { 100.0f, 0.0f, -100.0f }, { 0.2f, 0.5f, 0.2f } },
@@ -787,7 +839,7 @@ public:
     }
 
     {
-      auto& mesh = m_resources.meshes.emplace_back(std::make_unique<Mesh>());
+      auto mesh = m_resources.create<Mesh>("object");
       Vertex vertices[]{
         Vertex{ { -1.0, -1.0, 0.0 }, { 1.0, 0.0, 0.0 } },
         Vertex{ { 1.0, -1.0, 0.0 }, { 0.0, 1.0, 0.0 } },
@@ -809,7 +861,7 @@ public:
     }
 
     {
-      auto& shader = m_resources.shaders.emplace_back(std::make_unique<Shader>());
+      auto shader = m_resources.create<Shader>("default");
       Shader::Options options{};
       options.vertexSource = "#version 460\n"
                              "layout (location = 0) in vec3 inPosition;\n"
@@ -856,12 +908,12 @@ public:
       shader->initialize(options);
     }
 
-    auto& materialLand = m_resources.materials.emplace_back(std::make_unique<Material>());
-    materialLand->initialize(m_resources.shaders[0].get());
+    auto materialLand = m_resources.create<Material>("default.land");
+    materialLand->initialize(m_resources.get<Shader>("default"));
     materialLand->setValue("Material.color", glm::vec3{ 0.0f, 1.0f, 0.0f });
 
-    auto& materialObject = m_resources.materials.emplace_back(std::make_unique<Material>());
-    materialObject->initialize(m_resources.shaders[0].get());
+    auto materialObject = m_resources.create<Material>("default.object");
+    materialObject->initialize(m_resources.get<Shader>("default"));
     materialObject->setValue("Material.color", glm::vec3{ 1.0f, 1.0f, 1.0f });
   }
 
@@ -881,8 +933,8 @@ public:
     Object* landObject = m_scene.makeObject();
     landObject->transform.position = { 0.0f, -10.0f, 0.0f };
     MeshRenderer* landObjectMeshRenderer = landObject->addComponent<MeshRenderer>();
-    landObjectMeshRenderer->mesh = m_resources.meshes[0].get();
-    landObjectMeshRenderer->materials.push_back(m_resources.materials[0].get());
+    landObjectMeshRenderer->mesh = m_resources.get<Mesh>("land");
+    landObjectMeshRenderer->materials.push_back(m_resources.get<Material>("default.land"));
 
     Object* lights[2];
     lights[0] = m_scene.makeObject();
