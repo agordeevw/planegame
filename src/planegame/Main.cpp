@@ -110,6 +110,7 @@ public:
   }
 
   Transform transform;
+  uint32_t tag = -1;
 
 private:
   friend class Scene;
@@ -159,6 +160,7 @@ public:
 
 class Scene;
 class Resources;
+class Debug;
 
 struct ScriptContext {
   Scene* scene;
@@ -166,6 +168,7 @@ struct ScriptContext {
   const Time* time;
   Random* random;
   Resources* resources;
+  Debug* debug;
 };
 
 class Script : public Component {
@@ -182,6 +185,7 @@ public:
   const Time& time() { return *m_context.time; }
   Random& random() { return *m_context.random; }
   Resources& resources() { return *m_context.resources; }
+  Debug& debug() { return *m_context.debug; }
 
 private:
   friend class Scene;
@@ -373,6 +377,25 @@ struct ShaderProgram {
     }
   }
 
+  template <class T>
+  void setUniformArray(const char* uniformName, uint32_t count, const T* value) {
+    const Uniform* pUniform = getUniform(uniformName);
+    if (pUniform) {
+      if constexpr (std::is_same_v<T, int>)
+        glProgramUniform1iv(program, pUniform->location, count, reinterpret_cast<const float*>(value));
+      else if constexpr (std::is_same_v<T, float>)
+        glProgramUniform1fv(program, pUniform->location, count, reinterpret_cast<const float*>(value));
+      else if constexpr (std::is_same_v<T, glm::vec2>)
+        glProgramUniform2fv(program, pUniform->location, count, reinterpret_cast<const float*>(value));
+      else if constexpr (std::is_same_v<T, glm::vec3>)
+        glProgramUniform3fv(program, pUniform->location, count, reinterpret_cast<const float*>(value));
+      else if constexpr (std::is_same_v<T, glm::vec4>)
+        glProgramUniform4fv(program, pUniform->location, count, reinterpret_cast<const float*>(value));
+      else
+        static_assert(false);
+    }
+  }
+
   GLuint program;
 
 private:
@@ -527,6 +550,14 @@ public:
     return objects.emplace_back(std::make_unique<Object>(*this)).get();
   }
 
+  Object* findObjectWithTag(uint32_t tag) {
+    for (auto& object : objects) {
+      if (object->tag == tag)
+        return object.get();
+    }
+    return nullptr;
+  }
+
   template <class T>
   void registerComponent(std::unique_ptr<T> component) {
     static_assert(std::is_base_of_v<Component, T>);
@@ -654,6 +685,31 @@ private:
   std::unordered_map<std::string, std::size_t> nameToMaterialIdx;
 };
 
+class Debug {
+public:
+  struct DrawLineCommand {
+    glm::vec3 verts[2];
+    glm::vec3 color;
+  };
+
+  void drawLine(glm::vec3 start, glm::vec3 end, glm::vec3 color) {
+    DrawLineCommand command;
+    command.verts[0] = start;
+    command.verts[1] = end;
+    command.color = color;
+    m_drawLineCommands.push_back(command);
+  }
+
+  void clear() {
+    m_drawLineCommands.clear();
+  }
+
+private:
+  friend class Application;
+
+  std::vector<DrawLineCommand> m_drawLineCommands;
+};
+
 class FPSCameraScript final : public Script {
 public:
   using Script::Script;
@@ -696,6 +752,7 @@ public:
   using Script::Script;
 
   void initialize() override {
+    m_chasedObject = scene().findObjectWithTag(0);
   }
 
   void update() override {
@@ -714,7 +771,7 @@ public:
   using Script::Script;
 
   void initialize() override {
-    velocity = 2.0f * transform.forward();
+    velocity = 10.0f * transform.forward();
   }
 
   void update() override {
@@ -737,12 +794,14 @@ public:
     glm::vec3 up = transform.forward();
 
     float thrust = 10.0f;
-    float drag = 0.5f;
+    float drag = 0.5f + 10.0f * (1.0f - glm::dot(glm::normalize(velocity), transform.forward()));
     float weight = 9.81f;
-    float lift = 9.81f;
+    float lift = l2Norm(velocity);
 
-    velocity += (thrust * forward - drag * velocity + lift * up - weight * glm::vec3(0.0f, -1.0f, 0.0f)) * time().dt;
+    velocity += (thrust * forward - drag * velocity + lift * up + weight * glm::vec3(0.0f, -1.0f, 0.0f)) * time().dt;
     transform.position += velocity * time().dt;
+
+    debug().drawLine(transform.position, transform.position + velocity, glm::vec3{ 1.0f, 1.0f, 1.0f });
   }
 
   float minSpeed = 5.0f;
@@ -936,10 +995,10 @@ public:
     {
       auto mesh = m_resources.create<Mesh>("land");
       Vertex vertices[]{
-        Vertex{ { -100.0f, 0.0f, -100.0f }, { 0.0f, 1.0f, 0.0f } },
-        Vertex{ { 100.0f, 0.0f, -100.0f }, { 0.0f, 1.0f, 0.0f } },
-        Vertex{ { 100.0f, 0.0f, 100.0f }, { 0.0f, 1.0f, 0.0f } },
-        Vertex{ { -100.0f, 0.0f, 100.0f }, { 0.0f, 1.0f, 0.0f } },
+        Vertex{ { -100000.0f, 0.0f, -100000.0f }, { 0.0f, 1.0f, 0.0f } },
+        Vertex{ { 100000.0f, 0.0f, -100000.0f }, { 0.0f, 1.0f, 0.0f } },
+        Vertex{ { 100000.0f, 0.0f, 100000.0f }, { 0.0f, 1.0f, 0.0f } },
+        Vertex{ { -100000.0f, 0.0f, 100000.0f }, { 0.0f, 1.0f, 0.0f } },
       };
       uint32_t indices[]{ 0, 2, 1, 0, 3, 2 };
 
@@ -1026,6 +1085,32 @@ public:
     }
 
     {
+      auto shader = m_resources.create<Shader>("debug.drawline");
+      Shader::Options options{};
+      options.vertexSource = "#version 460\n"
+                             "layout (std140, binding = 0) uniform ViewProjection { mat4 view; mat4 projection; };\n"
+                             "uniform vec3 verts[2];\n"
+                             "uniform vec3 color;\n"
+                             "layout (location = 0) out vec3 outColor;\n"
+                             "out gl_PerVertex {\n"
+                             "  vec4 gl_Position;\n"
+                             "  float gl_PointSize;\n"
+                             "  float gl_ClipDistance[];\n"
+                             "};\n"
+                             "void main() {\n"
+                             "  gl_Position = projection * view * vec4(verts[gl_VertexID], 1.0);\n"
+                             "  outColor = color;\n"
+                             "}";
+      options.fragmentSource = "#version 460\n"
+                               "layout (location = 0) in vec3 color;\n"
+                               "layout (location = 0) out vec4 fragColor;\n"
+                               "void main() {\n"
+                               "  fragColor = vec4(color, 1.0);\n"
+                               "}";
+      shader->initialize(options);
+    }
+
+    {
       auto material = m_resources.create<Material>("default.land");
       material->initialize(m_resources.get<Shader>("default"));
       material->setValue("Material.color", glm::vec3{ 0.0f, 1.0f, 0.0f });
@@ -1057,8 +1142,6 @@ public:
   }
 
   void setUpScene() {
-    Object* mainCameraObject = m_scene.makeObject();
-
     Object* movingObjectGeneratorObject = m_scene.makeObject();
     movingObjectGeneratorObject->addComponent<MovingObjectGeneratorScript>();
 
@@ -1078,6 +1161,7 @@ public:
 
     Object* plane = m_scene.makeObject();
     {
+      plane->tag = 0;
       plane->transform.position = { 0.0f, 10.0f, 0.0f };
       MeshRenderer* meshRenderer = plane->addComponent<MeshRenderer>();
       meshRenderer->mesh = m_resources.get<Mesh>("su37");
@@ -1085,13 +1169,32 @@ public:
       meshRenderer->materials.push_back(m_resources.get<Material>("su37.cockpit"));
       meshRenderer->materials.push_back(m_resources.get<Material>("su37.engine"));
       plane->addComponent<PlaneControlScript>();
+
+      Object* childLight = m_scene.makeObject();
+      plane->addChild(childLight);
+      Light* light = childLight->addComponent<Light>();
+      childLight->transform.position = { 0.0f, 0.0f, 4.0f };
+      light->color = { 5.0f, 5.0f, 5.0f };
     }
 
-    Camera* mainCamera = mainCameraObject->addComponent<Camera>();
-    mainCamera->aspectRatio = float(m_width) / float(m_height);
-    mainCamera->isMain = true;
-    mainCamera->fov = glm::radians(70.0f);
-    mainCameraObject->addComponent<PlaneChaseCameraScript>()->m_chasedObject = plane;
+    Object* plane1 = m_scene.makeObject();
+    {
+      plane1->transform.position = { 0.0f, 10.0f, 0.0f };
+      MeshRenderer* meshRenderer = plane1->addComponent<MeshRenderer>();
+      meshRenderer->mesh = m_resources.get<Mesh>("su37");
+      meshRenderer->materials.push_back(m_resources.get<Material>("su37.body"));
+      meshRenderer->materials.push_back(m_resources.get<Material>("su37.cockpit"));
+      meshRenderer->materials.push_back(m_resources.get<Material>("su37.engine"));
+    }
+
+    Object* mainCameraObject = m_scene.makeObject();
+    {
+      Camera* mainCamera = mainCameraObject->addComponent<Camera>();
+      mainCamera->aspectRatio = float(m_width) / float(m_height);
+      mainCamera->isMain = true;
+      mainCamera->fov = glm::radians(70.0f);
+      mainCameraObject->addComponent<PlaneChaseCameraScript>();
+    }
   }
 
   void run() {
@@ -1104,6 +1207,7 @@ public:
     m_scene.scriptContext.time = &m_time;
     m_scene.scriptContext.scene = &m_scene;
     m_scene.scriptContext.resources = &m_resources;
+    m_scene.scriptContext.debug = &m_debug;
     SDL_GL_GetDrawableSize(m_window, &m_width, &m_height);
 
     setUpResources();
@@ -1111,14 +1215,62 @@ public:
 
     GLint ubOffsetAlignment;
     glGetIntegerv(GL_UNIFORM_BUFFER_OFFSET_ALIGNMENT, &ubOffsetAlignment);
-    GLuint uniformBuffers[2];
-    glCreateBuffers(2, uniformBuffers);
-    glNamedBufferData(uniformBuffers[0], 64 * 1024, nullptr, GL_DYNAMIC_DRAW);
-    glNamedBufferData(uniformBuffers[1], 64 * 1024, nullptr, GL_DYNAMIC_DRAW);
-    GLuint uboScene = uniformBuffers[0];
-    GLuint uboMaterial = uniformBuffers[1];
 
+    struct MaterialUniformBufferStackAllocator {
+    public:
+      MaterialUniformBufferStackAllocator(uint32_t size, uint32_t alignment) : alignment(alignment), backingStorage(size) {}
+
+      struct PtrOffsetPair {
+        char* ptr;
+        uint32_t offset;
+      } alloc(uint32_t size) {
+        uint32_t ret = nextAllocationStart;
+        m_allocatedSize = nextAllocationStart + size;
+        nextAllocationStart = (m_allocatedSize + alignment - 1) & (~(alignment - 1));
+        return { &backingStorage[ret], ret };
+      }
+
+      void clear() {
+        nextAllocationStart = 0;
+      }
+
+      uint32_t allocatedSize() const {
+        return m_allocatedSize;
+      }
+
+      void* data() {
+        return backingStorage.data();
+      }
+
+    private:
+      uint32_t alignment;
+      std::vector<char> backingStorage;
+      uint32_t nextAllocationStart = 0;
+      uint32_t m_allocatedSize = 0;
+    } uboMaterialAllocator(64 * 1024, ubOffsetAlignment);
+
+    const uint32_t MAX_FRAMES_IN_FLIGHT = 2;
+    const uint32_t FRAME_0 = 0;
+    const uint32_t FRAME_1 = 1;
+    GLuint uniformBuffers[MAX_FRAMES_IN_FLIGHT][2];
+    GLuint uboScene[MAX_FRAMES_IN_FLIGHT];
+    GLuint uboMaterial[MAX_FRAMES_IN_FLIGHT];
+    for (uint32_t frameIdx = 0; frameIdx < MAX_FRAMES_IN_FLIGHT; frameIdx++) {
+      glCreateBuffers(2, uniformBuffers[frameIdx]);
+      glNamedBufferData(uniformBuffers[frameIdx][0], 64 * 1024, nullptr, GL_DYNAMIC_DRAW);
+      glNamedBufferData(uniformBuffers[frameIdx][1], 64 * 1024, nullptr, GL_DYNAMIC_DRAW);
+      uboScene[frameIdx] = uniformBuffers[frameIdx][0];
+      uboMaterial[frameIdx] = uniformBuffers[frameIdx][1];
+    }
+    GLuint vaoDebug;
+    glCreateVertexArrays(1, &vaoDebug);
+
+    SDL_GL_SetSwapInterval(0);
     SDL_ShowWindow(m_window);
+    uint32_t currentFrame = 0;
+    auto advanceToNextFrame = [&MAX_FRAMES_IN_FLIGHT, &currentFrame]() {
+      currentFrame = (currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
+    };
 
     SDL_bool relativeMouseMode = SDL_TRUE;
     SDL_SetRelativeMouseMode(relativeMouseMode);
@@ -1126,6 +1278,7 @@ public:
     uint64_t ticksLast = SDL_GetPerformanceCounter();
     uint64_t frequency = SDL_GetPerformanceFrequency();
     int counter = 0;
+    float frameTimeAccum = 0.0f;
     while (true) {
       handleEvents();
       if (m_quit)
@@ -1139,10 +1292,12 @@ public:
 
       {
         counter++;
+        frameTimeAccum += m_time.dt / float(60.0f);
         if (counter >= 60) {
           counter = 0;
           char title[1024];
-          sprintf(title, "%f ms, %f FPS", 1000.0f * m_time.dt, (1.0f / m_time.dt));
+          sprintf(title, "%f ms, %f FPS", 1000.0f * frameTimeAccum, (1.0f / frameTimeAccum));
+          frameTimeAccum = 0.0f;
           SDL_SetWindowTitle(m_window, title);
         }
       }
@@ -1198,34 +1353,63 @@ public:
         sceneUBOLayout.matrices.projection = m_scene.getMainCamera()->projectionMatrix4();
         uint32_t lightId = 0;
         for (auto& light : m_scene.components.lights) {
-          sceneUBOLayout.lights.positions[lightId].v = light->transform.position;
+          sceneUBOLayout.lights.positions[lightId].v = light->transform.worldPosition();
           sceneUBOLayout.lights.colors[lightId].v = light->color;
           lightId++;
         }
         sceneUBOLayout.lights.count = lightId;
-        glNamedBufferSubData(uboScene, 0, sizeof(sceneUBOLayout), &sceneUBOLayout);
-        glBindBufferRange(GL_UNIFORM_BUFFER, 0, uboScene, offsetof(SceneUniformBufferLayout, matrices), sizeof(sceneUBOLayout.matrices));
-        glBindBufferRange(GL_UNIFORM_BUFFER, 1, uboScene, offsetof(SceneUniformBufferLayout, lights), sizeof(sceneUBOLayout.lights));
+        glNamedBufferSubData(uboScene[currentFrame], 0, sizeof(sceneUBOLayout), &sceneUBOLayout);
+        glBindBufferRange(GL_UNIFORM_BUFFER, 0, uboScene[currentFrame], offsetof(SceneUniformBufferLayout, matrices), sizeof(sceneUBOLayout.matrices));
+        glBindBufferRange(GL_UNIFORM_BUFFER, 1, uboScene[currentFrame], offsetof(SceneUniformBufferLayout, lights), sizeof(sceneUBOLayout.lights));
+      }
+
+      // Set up materials buffer
+      std::unordered_map<const Material*, uint32_t> offsetForMaterial;
+      uboMaterialAllocator.clear();
+      {
+        for (auto& meshRenderer : m_scene.components.meshRenderers) {
+          for (std::size_t i = 0; i < meshRenderer->mesh->submeshes.size(); i++) {
+            const Material* material = meshRenderer->materials[i];
+            if (offsetForMaterial.find(material) == offsetForMaterial.end()) {
+              auto [ptr, offset] = uboMaterialAllocator.alloc(material->materialUniformBlock->size);
+              offsetForMaterial[material] = offset;
+              memcpy(ptr, material->uniformStorage.get(), material->materialUniformBlock->size);
+            }
+          }
+        }
+
+        glNamedBufferSubData(uboMaterial[currentFrame], 0, uboMaterialAllocator.allocatedSize(), uboMaterialAllocator.data());
       }
 
       for (auto& meshRenderer : m_scene.components.meshRenderers) {
         glBindVertexArray(meshRenderer->mesh->vao);
         for (std::size_t i = 0; i < meshRenderer->mesh->submeshes.size(); i++) {
           Mesh::SubMesh& submesh = meshRenderer->mesh->submeshes[i];
-          const Material& material = *meshRenderer->materials[i];
-          glBindProgramPipeline(material.shader->programPipeline);
-          glNamedBufferSubData(uboMaterial, 0, material.materialUniformBlock->size, material.uniformStorage.get());
-          glBindBufferRange(GL_UNIFORM_BUFFER, 2, uboMaterial, 0, material.materialUniformBlock->size);
-          material.shader->vertShader.setUniform("model", meshRenderer->transform.asMatrix4());
-          material.shader->vertShader.setUniform("time", float(m_time.timeSinceStart));
-          material.shader->fragShader.setUniform("time", float(m_time.timeSinceStart));
+          const Material* material = meshRenderer->materials[i];
+          glBindProgramPipeline(material->shader->programPipeline);
+          glBindBufferRange(GL_UNIFORM_BUFFER, 2, uboMaterial[currentFrame], offsetForMaterial.at(material), material->materialUniformBlock->size);
+          material->shader->vertShader.setUniform("model", meshRenderer->transform.asMatrix4());
+          material->shader->vertShader.setUniform("time", float(m_time.timeSinceStart));
+          material->shader->fragShader.setUniform("time", float(m_time.timeSinceStart));
           glDrawElements(GL_TRIANGLES, submesh.indexCount, GL_UNSIGNED_INT, reinterpret_cast<void*>(submesh.indexStart * sizeof(uint32_t)));
         }
       }
+
+      glDisable(GL_DEPTH_TEST);
+      Shader* lineShader = m_resources.get<Shader>("debug.drawline");
+      glBindVertexArray(vaoDebug);
+      glBindProgramPipeline(lineShader->programPipeline);
+      for (auto& command : m_debug.m_drawLineCommands) {
+        lineShader->vertShader.setUniformArray("verts[0]", 2, command.verts);
+        lineShader->vertShader.setUniform("color", command.color);
+        glDrawArrays(GL_LINES, 0, 2);
+      }
       glBindVertexArray(0);
       glBindProgramPipeline(0);
+      m_debug.clear();
 
       SDL_GL_SwapWindow(m_window);
+      advanceToNextFrame();
     }
   }
 
@@ -1285,6 +1469,7 @@ private:
   Scene m_scene;
   Random m_random;
   Resources m_resources;
+  Debug m_debug;
 };
 
 int main(int, char**) {

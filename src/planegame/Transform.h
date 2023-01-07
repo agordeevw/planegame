@@ -15,6 +15,16 @@ struct Transform {
     rotation = glm::rotate(rotation, angle, glm::rotate(glm::inverse(rotation), v));
   }
 
+  glm::vec3 worldPosition() const {
+    glm::vec3 ret = position;
+    Transform* parent = parentTransform;
+    while (parent) {
+      ret = glm::rotate(parent->rotation, ret) + parent->position;
+      parent = parent->parentTransform;
+    }
+    return ret;
+  }
+
   glm::vec3 forward() const {
     glm::vec3 ret{ 0.0, 0.0, -1.0 };
     ret = rotation * ret;
