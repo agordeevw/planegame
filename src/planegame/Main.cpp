@@ -12,7 +12,7 @@
 
 struct Vertex {
   glm::vec3 position;
-  glm::vec3 color;
+  glm::vec3 normal;
 };
 
 struct Input {
@@ -691,6 +691,68 @@ public:
   float m_speed = 10.0;
 };
 
+class PlaneChaseCameraScript final : public Script {
+public:
+  using Script::Script;
+
+  void initialize() override {
+  }
+
+  void update() override {
+    Transform& transform = object.transform;
+    glm::vec3 forward = m_chasedObject->transform.forward();
+    glm::vec3 up = m_chasedObject->transform.up();
+    transform.position = m_chasedObject->transform.position - 5.0f * forward + 1.0f * up;
+    transform.rotation = glm::quatLookAt(glm::normalize(m_chasedObject->transform.position + 1.0f * up - transform.position), m_chasedObject->transform.up());
+  }
+
+  Object* m_chasedObject = nullptr;
+};
+
+class PlaneControlScript final : public Script {
+public:
+  using Script::Script;
+
+  void initialize() override {
+    velocity = 2.0f * transform.forward();
+  }
+
+  void update() override {
+    Transform& transform = object.transform;
+
+    if (input().keyDown[SDL_SCANCODE_W]) {
+      transform.rotateLocal(glm::vec3{ 1.0f, 0.0f, 0.0f }, -pitchSpeed * time().dt);
+    }
+    if (input().keyDown[SDL_SCANCODE_S]) {
+      transform.rotateLocal(glm::vec3{ 1.0f, 0.0f, 0.0f }, +pitchSpeed * time().dt);
+    }
+    if (input().keyDown[SDL_SCANCODE_D]) {
+      transform.rotateLocal(glm::vec3{ 0.0f, 0.0f, 1.0f }, -rollSpeed * time().dt);
+    }
+    if (input().keyDown[SDL_SCANCODE_A]) {
+      transform.rotateLocal(glm::vec3{ 0.0f, 0.0f, 1.0f }, +rollSpeed * time().dt);
+    }
+
+    glm::vec3 forward = transform.forward();
+    glm::vec3 up = transform.forward();
+
+    float thrust = 10.0f;
+    float drag = 0.5f;
+    float weight = 9.81f;
+    float lift = 9.81f;
+
+    velocity += (thrust * forward - drag * velocity + lift * up - weight * glm::vec3(0.0f, -1.0f, 0.0f)) * time().dt;
+    transform.position += velocity * time().dt;
+  }
+
+  float minSpeed = 5.0f;
+  float pitchSpeed = 1.0f;
+  float rollSpeed = 2.0f;
+
+private:
+  glm::vec3 velocity{};
+};
+
 class MovingObjectScript final : public Script {
 public:
   using Script::Script;
@@ -816,12 +878,68 @@ public:
 
   void setUpResources() {
     {
+      uint32_t vertexCount;
+      uint32_t indexCount;
+      uint32_t submeshCount;
+      std::vector<float> vertices;
+      std::vector<uint32_t> indices;
+      std::vector<uint32_t> submeshes;
+      {
+        FILE* file = fopen("su37.meshresource", "rb");
+        if (!file)
+          throw std::runtime_error("file not found");
+
+        if (fread(&vertexCount, sizeof(vertexCount), 1, file) != 1)
+          throw std::runtime_error("import error");
+
+        vertices.resize(vertexCount * 6);
+        if (fread(vertices.data(), 6 * sizeof(float), vertexCount, file) != vertexCount)
+          throw std::runtime_error("import error");
+
+        if (fread(&indexCount, sizeof(indexCount), 1, file) != 1)
+          throw std::runtime_error("import error");
+
+        indices.resize(indexCount);
+        if (fread(indices.data(), sizeof(uint32_t), indexCount, file) != indexCount)
+          throw std::runtime_error("import error");
+
+        if (fread(&submeshCount, sizeof(submeshCount), 1, file) != 1)
+          throw std::runtime_error("import error");
+
+        submeshes.resize(2 * submeshCount);
+        if (fread(submeshes.data(), 2 * sizeof(uint32_t), submeshCount, file) != submeshCount)
+          throw std::runtime_error("import error");
+
+        fclose(file);
+      }
+
+      auto mesh = m_resources.create<Mesh>("su37");
+
+      Mesh::Options options;
+      options.attributes = {
+        Mesh::VertexAttribute(Mesh::VertexAttribute::Format::f32, 3),
+        Mesh::VertexAttribute(Mesh::VertexAttribute::Format::f32, 3)
+      };
+      options.indexBufferData = indices.data();
+      options.indexCount = indexCount;
+      options.indexFormat = Mesh::IndexFormat::u32;
+      options.vertexBufferData = vertices.data();
+      options.vertexCount = vertexCount;
+      mesh->initialize(options);
+
+      mesh->submeshes.resize(submeshCount);
+      for (uint32_t i = 0; i < submeshCount; i++) {
+        mesh->submeshes[i] = { submeshes[2 * i + 0], submeshes[2 * i + 1] };
+      }
+    }
+
+    {
       auto mesh = m_resources.create<Mesh>("land");
       Vertex vertices[]{
-        Vertex{ { -100.0f, 0.0f, -100.0f }, { 0.2f, 0.5f, 0.2f } },
-        Vertex{ { 100.0f, 0.0f, -100.0f }, { 0.2f, 0.5f, 0.2f } },
-        Vertex{ { 100.0f, 0.0f, 100.0f }, { 0.2f, 0.5f, 0.2f } },
-        Vertex{ { -100.0f, 0.0f, 100.0f }, { 0.2f, 0.5f, 0.2f } },
+        Vertex{ { -100.0f, 0.0f, -100.0f }, { 0.0f, 1.0f, 0.0f } },
+        Vertex{ { 100.0f, 0.0f, -100.0f }, { 0.0f, 1.0f, 0.0f } },
+        Vertex{ { 100.0f, 0.0f, 100.0f }, { 0.0f, 1.0f, 0.0f } },
+        Vertex{ { -100.0f, 0.0f, 100.0f }, { 0.0f, 1.0f, 0.0f } },
       };
       uint32_t indices[]{ 0, 2, 1, 0, 3, 2 };
 
@@ -865,9 +983,9 @@ public:
       Shader::Options options{};
       options.vertexSource = "#version 460\n"
                              "layout (location = 0) in vec3 inPosition;\n"
-                             "layout (location = 1) in vec3 inColor;\n"
+                             "layout (location = 1) in vec3 inNormal;\n"
                              "layout (location = 0) out vec3 position;\n"
-                             "layout (location = 1) out vec3 color;\n"
+                             "layout (location = 1) out vec3 normal;\n"
                              "out gl_PerVertex {\n"
                              "  vec4 gl_Position;\n"
                              "  float gl_PointSize;\n"
@@ -882,13 +1000,13 @@ public:
                              "void main() {\n"
                              "  gl_Position = projection * view * model * vec4(inPosition, 1.0);\n"
                              "  position = (model * vec4(inPosition, 1.0)).xyz;\n"
-                             "  color = inColor.rgb;\n"
+                             "  normal = normalize(inNormal);\n"
                              "}";
       options.fragmentSource = "#version 460\n"
                                "layout (location = 0) in vec3 position;\n"
-                               "layout (location = 1) in vec3 color;\n"
+                               "layout (location = 1) in vec3 normal;\n"
                                "layout (location = 0) out vec4 fragColor;\n"
-                               "struct Light { vec3 position; vec3 color; };"
+                               "struct Light { vec3 position; vec3 color; };\n"
                                "layout (std140, binding = 1) uniform Lights {\n"
                                "  vec3 positions[128];\n"
                                "  vec3 colors[128];\n"
@@ -900,32 +1018,46 @@ public:
                                "} material;\n"
                                "uniform float time;"
                                "void main() {\n"
-                               "  float surfColorMul = 1.0;\n"
                                "  vec3 lightsColor = vec3(0.0,0.0,0.0);\n"
                                "  for (int i = 0; i < lights.count; i++) { lightsColor += lights.colors[i] / (1.0 + length(position - lights.positions[i])); }"
-                               "  fragColor = vec4(surfColorMul * material.color * (material.ambient + lightsColor), 1.0);\n"
+                               "  fragColor = vec4(material.color * (material.ambient + lightsColor), 1.0);\n"
                                "}";
       shader->initialize(options);
     }
 
-    auto materialLand = m_resources.create<Material>("default.land");
-    materialLand->initialize(m_resources.get<Shader>("default"));
-    materialLand->setValue("Material.color", glm::vec3{ 0.0f, 1.0f, 0.0f });
+    {
+      auto material = m_resources.create<Material>("default.land");
+      material->initialize(m_resources.get<Shader>("default"));
+      material->setValue("Material.color", glm::vec3{ 0.0f, 1.0f, 0.0f });
+    }
 
-    auto materialObject = m_resources.create<Material>("default.object");
-    materialObject->initialize(m_resources.get<Shader>("default"));
-    materialObject->setValue("Material.color", glm::vec3{ 1.0f, 1.0f, 1.0f });
+    {
+      auto material = m_resources.create<Material>("default.object");
+      material->initialize(m_resources.get<Shader>("default"));
+      material->setValue("Material.color", glm::vec3{ 1.0f, 1.0f, 1.0f });
+    }
+
+    {
+      auto material = m_resources.create<Material>("su37.body");
+      material->initialize(m_resources.get<Shader>("default"));
+      material->setValue("Material.color", glm::vec3{ 0.2f, 0.400000f, 0.200000f });
+    }
+
+    {
+      auto material = m_resources.create<Material>("su37.cockpit");
+      material->initialize(m_resources.get<Shader>("default"));
+      material->setValue("Material.color", glm::vec3{ 0.274425f, 0.282128f, 0.800000f });
+    }
+
+    {
+      auto material = m_resources.create<Material>("su37.engine");
+      material->initialize(m_resources.get<Shader>("default"));
+      material->setValue("Material.color", glm::vec3{ 0.100000f, 0.100000f, 0.100000f });
+    }
   }
 
   void setUpScene() {
     Object* mainCameraObject = m_scene.makeObject();
-    Camera* mainCamera = mainCameraObject->addComponent<Camera>();
-    mainCamera->aspectRatio = float(m_width) / float(m_height);
-    mainCamera->object.transform.position = glm::vec3{ 0.0, 0.0, 10.0 };
-    mainCamera->isMain = true;
-    mainCamera->fov = glm::radians(100.0f);
-    mainCameraObject->addComponent<FPSCameraScript>();
-    mainCameraObject->addComponent<Light>()->color = { 3.0f, 3.0f, 3.0f };
 
     Object* movingObjectGeneratorObject = m_scene.makeObject();
     movingObjectGeneratorObject->addComponent<MovingObjectGeneratorScript>();
@@ -943,6 +1075,23 @@ public:
     lights[1] = m_scene.makeObject();
     lights[1]->transform.position = { 2.0, 2.0f, 0.0f };
     lights[1]->addComponent<Light>()->color = { 3.0f, 0.0f, 0.0f };
+
+    Object* plane = m_scene.makeObject();
+    {
+      plane->transform.position = { 0.0f, 10.0f, 0.0f };
+      MeshRenderer* meshRenderer = plane->addComponent<MeshRenderer>();
+      meshRenderer->mesh = m_resources.get<Mesh>("su37");
+      meshRenderer->materials.push_back(m_resources.get<Material>("su37.body"));
+      meshRenderer->materials.push_back(m_resources.get<Material>("su37.cockpit"));
+      meshRenderer->materials.push_back(m_resources.get<Material>("su37.engine"));
+      plane->addComponent<PlaneControlScript>();
+    }
+
+    Camera* mainCamera = mainCameraObject->addComponent<Camera>();
+    mainCamera->aspectRatio = float(m_width) / float(m_height);
+    mainCamera->isMain = true;
+    mainCamera->fov = glm::radians(70.0f);
+    mainCameraObject->addComponent<PlaneChaseCameraScript>()->m_chasedObject = plane;
   }
 
   void run() {
@@ -976,6 +1125,7 @@ public:
     m_time.timeSinceStart = 0.0;
     uint64_t ticksLast = SDL_GetPerformanceCounter();
     uint64_t frequency = SDL_GetPerformanceFrequency();
+    int counter = 0;
     while (true) {
       handleEvents();
       if (m_quit)
@@ -986,6 +1136,16 @@ public:
       double delta = double(ticksDiff) / double(frequency);
       m_time.timeSinceStart += delta;
       m_time.dt = float(delta);
+
+      {
+        counter++;
+        if (counter >= 60) {
+          counter = 0;
+          char title[1024];
+          sprintf(title, "%f ms, %f FPS", 1000.0f * m_time.dt, (1.0f / m_time.dt));
+          SDL_SetWindowTitle(m_window, title);
+        }
+      }
       ticksLast = ticksNow;
 
       // Update
@@ -1050,8 +1210,8 @@ public:
 
       for (auto& meshRenderer : m_scene.components.meshRenderers) {
         glBindVertexArray(meshRenderer->mesh->vao);
-        std::size_t i = 0;
-        for (const Mesh::SubMesh& submesh : meshRenderer->mesh->submeshes) {
+        for (std::size_t i = 0; i < meshRenderer->mesh->submeshes.size(); i++) {
+          Mesh::SubMesh& submesh = meshRenderer->mesh->submeshes[i];
           const Material& material = *meshRenderer->materials[i];
           glBindProgramPipeline(material.shader->programPipeline);
           glNamedBufferSubData(uboMaterial, 0, material.materialUniformBlock->size, material.uniformStorage.get());
