@@ -2,6 +2,7 @@
 #include "Transform.h"
 
 #include <SDL.h>
+#include <SDL_image.h>
 #include <planegame/Renderer/glad/glad.h>
 
 #include <memory>
@@ -50,9 +51,6 @@ public:
 
   void destroy() {
     taggedDestroyed = true;
-    for (auto* child : m_children) {
-      child->destroy();
-    }
   }
 
   void detachFromParent() {
@@ -329,7 +327,22 @@ struct ShaderProgram {
   };
 
   bool initialize(const Options& options) {
-    program = glCreateShaderProgramv(options.type, 1, &options.source);
+    const char* vertexShaderPrefix = "#version 460\n"
+                                     "out gl_PerVertex {\n"
+                                     "  vec4 gl_Position;\n"
+                                     "  float gl_PointSize;\n"
+                                     "  float gl_ClipDistance[];\n"
+                                     "};\n";
+    const char* fragmentShaderPrefix = "#version 460\n";
+    if (options.type == GL_VERTEX_SHADER) {
+      const char* sources[2] = { vertexShaderPrefix, options.source };
+      program = glCreateShaderProgramv(options.type, 2, sources);
+    }
+    else if (options.type == GL_FRAGMENT_SHADER) {
+      const char* sources[2] = { fragmentShaderPrefix, options.source };
+      program = glCreateShaderProgramv(options.type, 2, sources);
+    }
+
     bool status = checkLinkStatus(program);
 
     if (status) {
@@ -405,7 +418,7 @@ private:
     if (linkStatus == GL_FALSE) {
       char buffer[1024];
       glGetProgramInfoLog(program, sizeof(buffer), nullptr, buffer);
-      printf("fs: %s\n", buffer);
+      printf("shader link failure: %s\n", buffer);
     }
     return linkStatus == GL_TRUE;
   }
@@ -455,9 +468,11 @@ private:
         uniforms.push_back(std::move(uniform));
       }
     }
+  }
 
+  void debugShowUniforms() {
     printf("ShaderProgram\n");
-    for (GLint i = 0; i < numUniformBlocks; i++) {
+    for (GLint i = 0; i < uniformBlocks.size(); i++) {
       printf("  UniformBlock %s: binding %d, size %d\n", uniformBlocks[i].name.c_str(), uniformBlocks[i].binding, uniformBlocks[i].size);
       for (UniformBlock::Entry& entry : uniformBlocks[i].entries) {
         printf("    Entry %s: type %d, array_size %d, offset %d, array_stride %d\n",
@@ -502,6 +517,49 @@ struct Shader {
   ShaderProgram vertShader;
   ShaderProgram fragShader;
   GLuint programPipeline = -1;
+};
+
+struct Texture2D {
+  struct Options {
+    const char* path = nullptr;
+  };
+
+  void initialize(const Options& options) {
+    SDL_Surface* surf = IMG_Load(options.path);
+    GLenum glformat = GL_RGB;
+    switch (surf->format->BytesPerPixel) {
+      case 1:
+        glformat = GL_RED;
+        break;
+      case 2:
+        glformat = GL_RG;
+        break;
+      case 3:
+        glformat = GL_RGB;
+        break;
+      case 4:
+        glformat = GL_RGBA;
+        break;
+      default:
+        throw std::runtime_error("unknown image format");
+    }
+
+    std::vector<char> data(surf->h * surf->w * surf->format->BytesPerPixel);
+    for (int r = 0; r < surf->h; r++) {
+      memcpy(data.data() + (surf->h - r - 1) * surf->pitch, (char*)surf->pixels + r * surf->pitch, surf->pitch);
+    }
+    width = surf->w;
+    height = surf->h;
+
+    glCreateTextures(GL_TEXTURE_2D, 1, &handle);
+    glTextureStorage2D(handle, 1, GL_RGB8, surf->w, surf->h);
+    glTextureSubImage2D(handle, 0, 0, 0, surf->w, surf->h, glformat, GL_UNSIGNED_BYTE, data.data());
+    SDL_FreeSurface(surf);
+  }
+
+  uint32_t width = -1;
+  uint32_t height = -1;
+  GLuint handle = -1;
 };
 
 struct Material {
@@ -588,12 +646,19 @@ public:
     return nullptr;
   }
 
+  void tagChildObjectsAndComponents(Object& object) {
+    for (auto& component : object.m_components) {
+      component->taggedDestroyed = true;
+    }
+    for (auto& child : object.m_children) {
+      tagChildObjectsAndComponents(*child);
+    }
+  }
+
   void destroyObjects() {
     for (auto& object : objects) {
       if (object->taggedDestroyed) {
-        for (auto& component : object->m_components) {
-          component->taggedDestroyed = true;
-        }
+        tagChildObjectsAndComponents(*object);
       }
     }
 
@@ -647,6 +712,9 @@ public:
     else if constexpr (std::is_same_v<T, Material>) {
       addResource(materials, nameToMaterialIdx);
     }
+    else if constexpr (std::is_same_v<T, Texture2D>) {
+      addResource(textures2D, nameToTexture2DIdx);
+    }
     else {
       static_assert(false, "Resource type not handled");
     }
@@ -670,6 +738,9 @@ public:
     else if constexpr (std::is_same_v<T, Material>) {
       ret = getResource(materials, nameToMaterialIdx);
     }
+    else if constexpr (std::is_same_v<T, Texture2D>) {
+      ret = getResource(textures2D, nameToTexture2DIdx);
+    }
     else {
       static_assert(false, "Resource type not handled");
     }
@@ -680,9 +751,11 @@ private:
   std::vector<std::unique_ptr<Mesh>> meshes;
   std::vector<std::unique_ptr<Shader>> shaders;
   std::vector<std::unique_ptr<Material>> materials;
+  std::vector<std::unique_ptr<Texture2D>> textures2D;
   std::unordered_map<std::string, std::size_t> nameToMeshIdx;
   std::unordered_map<std::string, std::size_t> nameToShaderIdx;
   std::unordered_map<std::string, std::size_t> nameToMaterialIdx;
+  std::unordered_map<std::string, std::size_t> nameToTexture2DIdx;
 };
 
 class Debug {
@@ -690,6 +763,11 @@ public:
   struct DrawLineCommand {
     glm::vec3 verts[2];
     glm::vec3 color;
+  };
+
+  struct DrawScreenTextCommand {
+    glm::vec2 topleft;
+    std::string str;
   };
 
   void drawLine(glm::vec3 start, glm::vec3 end, glm::vec3 color) {
@@ -700,14 +778,23 @@ public:
     m_drawLineCommands.push_back(command);
   }
 
+  void drawScreenText(glm::vec2 topleft, const char* str) {
+    DrawScreenTextCommand command;
+    command.topleft = topleft;
+    command.str = str;
+    m_drawScreenTextCommands.push_back(command);
+  }
+
   void clear() {
     m_drawLineCommands.clear();
+    m_drawScreenTextCommands.clear();
   }
 
 private:
   friend class Application;
 
   std::vector<DrawLineCommand> m_drawLineCommands;
+  std::vector<DrawScreenTextCommand> m_drawScreenTextCommands;
 };
 
 class FPSCameraScript final : public Script {
@@ -759,10 +846,21 @@ public:
     Transform& transform = object.transform;
     glm::vec3 forward = m_chasedObject->transform.forward();
     glm::vec3 up = m_chasedObject->transform.up();
-    transform.position = m_chasedObject->transform.position - 5.0f * forward + 1.0f * up;
+    glm::vec3 right = m_chasedObject->transform.right();
+    if (input().keyDown[SDL_SCANCODE_LALT]) {
+      horizAngleOffset += input().mousedx * time().dt;
+    }
+    else {
+      horizAngleOffset = 0.0f;
+    }
+
+    glm::vec3 offset = -5.0f * forward + 1.0f * up;
+    offset = glm::rotate(glm::angleAxis(horizAngleOffset, up), offset);
+    transform.position = m_chasedObject->transform.position + offset;
     transform.rotation = glm::quatLookAt(glm::normalize(m_chasedObject->transform.position + 1.0f * up - transform.position), m_chasedObject->transform.up());
   }
 
+  float horizAngleOffset = 0.0f;
   Object* m_chasedObject = nullptr;
 };
 
@@ -789,24 +887,36 @@ public:
     if (input().keyDown[SDL_SCANCODE_A]) {
       transform.rotateLocal(glm::vec3{ 0.0f, 0.0f, 1.0f }, +rollSpeed * time().dt);
     }
+    if (input().keyDown[SDL_SCANCODE_Q]) {
+      transform.rotateLocal(glm::vec3{ 0.0f, 1.0f, 0.0f }, -yawSpeed * time().dt);
+    }
+    if (input().keyDown[SDL_SCANCODE_E]) {
+      transform.rotateLocal(glm::vec3{ 0.0f, 1.0f, 0.0f }, +yawSpeed * time().dt);
+    }
 
     glm::vec3 forward = transform.forward();
     glm::vec3 up = transform.forward();
 
-    float thrust = 10.0f;
-    float drag = 0.5f + 10.0f * (1.0f - glm::dot(glm::normalize(velocity), transform.forward()));
-    float weight = 9.81f;
-    float lift = l2Norm(velocity);
+    float thrust = 1.5f;
+    float drag = 0.25f;
+    float weight = 0.25f;
+    float lift = 0.25f * l2Norm(velocity);
 
-    velocity += (thrust * forward - drag * velocity + lift * up + weight * glm::vec3(0.0f, -1.0f, 0.0f)) * time().dt;
+    glm::vec3 accel{};
+    velocity += ((thrust - drag * l2Norm(velocity)) * forward + lift * up + weight * glm::vec3(0.0f, -1.0f, 0.0f)) * time().dt;
     transform.position += velocity * time().dt;
 
+    char speed[256];
+    sprintf(speed, "%f", glm::length(velocity));
     debug().drawLine(transform.position, transform.position + velocity, glm::vec3{ 1.0f, 1.0f, 1.0f });
+    debug().drawLine(transform.position, transform.position + 5.0f * glm::vec3{ 0.0f, 0.0f, -1.0f }, glm::vec3{ 0.0f, 1.0f, 0.0f });
+    debug().drawScreenText({ -0.5f, 0.0f }, speed);
   }
 
   float minSpeed = 5.0f;
   float pitchSpeed = 1.0f;
   float rollSpeed = 2.0f;
+  float yawSpeed = 0.25f;
 
 private:
   glm::vec3 velocity{};
@@ -891,6 +1001,8 @@ public:
   int setUp() {
     if (SDL_Init(SDL_INIT_TIMER | SDL_INIT_AUDIO | SDL_INIT_EVENTS) != 0)
       return 1;
+    if (IMG_Init(IMG_INIT_PNG) == 0)
+      return 1;
 
     m_window = SDL_CreateWindow("",
       SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
@@ -928,6 +1040,7 @@ public:
       m_window = nullptr;
     }
 
+    IMG_Quit();
     SDL_Quit();
   }
 
@@ -995,10 +1108,10 @@ public:
     {
       auto mesh = m_resources.create<Mesh>("land");
       Vertex vertices[]{
-        Vertex{ { -100000.0f, 0.0f, -100000.0f }, { 0.0f, 1.0f, 0.0f } },
-        Vertex{ { 100000.0f, 0.0f, -100000.0f }, { 0.0f, 1.0f, 0.0f } },
-        Vertex{ { 100000.0f, 0.0f, 100000.0f }, { 0.0f, 1.0f, 0.0f } },
-        Vertex{ { -100000.0f, 0.0f, 100000.0f }, { 0.0f, 1.0f, 0.0f } },
+        Vertex{ { -1000.0f, 0.0f, -1000.0f }, { 0.0f, 1.0f, 0.0f } },
+        Vertex{ { 1000.0f, 0.0f, -1000.0f }, { 0.0f, 1.0f, 0.0f } },
+        Vertex{ { 1000.0f, 0.0f, 1000.0f }, { 0.0f, 1.0f, 0.0f } },
+        Vertex{ { -1000.0f, 0.0f, 1000.0f }, { 0.0f, 1.0f, 0.0f } },
       };
       uint32_t indices[]{ 0, 2, 1, 0, 3, 2 };
 
@@ -1040,16 +1153,10 @@ public:
     {
       auto shader = m_resources.create<Shader>("default");
       Shader::Options options{};
-      options.vertexSource = "#version 460\n"
-                             "layout (location = 0) in vec3 inPosition;\n"
+      options.vertexSource = "layout (location = 0) in vec3 inPosition;\n"
                              "layout (location = 1) in vec3 inNormal;\n"
                              "layout (location = 0) out vec3 position;\n"
                              "layout (location = 1) out vec3 normal;\n"
-                             "out gl_PerVertex {\n"
-                             "  vec4 gl_Position;\n"
-                             "  float gl_PointSize;\n"
-                             "  float gl_ClipDistance[];\n"
-                             "};\n"
                              "layout (std140, binding = 2) uniform Material {\n"
                              "  vec3 color;\n"
                              "  vec3 ambient;\n"
@@ -1061,9 +1168,8 @@ public:
                              "  position = (model * vec4(inPosition, 1.0)).xyz;\n"
                              "  normal = normalize(inNormal);\n"
                              "}";
-      options.fragmentSource = "#version 460\n"
-                               "layout (location = 0) in vec3 position;\n"
-                               "layout (location = 1) in vec3 normal;\n"
+      options.fragmentSource = "layout (location = 0) in vec3 position;\n"
+                               "layout (location = 1) in vec3 inNormal;\n"
                                "layout (location = 0) out vec4 fragColor;\n"
                                "struct Light { vec3 position; vec3 color; };\n"
                                "layout (std140, binding = 1) uniform Lights {\n"
@@ -1078,7 +1184,8 @@ public:
                                "uniform float time;"
                                "void main() {\n"
                                "  vec3 lightsColor = vec3(0.0,0.0,0.0);\n"
-                               "  for (int i = 0; i < lights.count; i++) { lightsColor += lights.colors[i] / (1.0 + length(position - lights.positions[i])); }"
+                               "  vec3 normal = normalize(inNormal);\n"
+                               "  for (int i = 0; i < lights.count; i++) { lightsColor += lights.colors[i] * max(0.0, dot(normal, normalize(lights.positions[i] - position))); }"
                                "  fragColor = vec4(material.color * (material.ambient + lightsColor), 1.0);\n"
                                "}";
       shader->initialize(options);
@@ -1087,25 +1194,42 @@ public:
     {
       auto shader = m_resources.create<Shader>("debug.drawline");
       Shader::Options options{};
-      options.vertexSource = "#version 460\n"
-                             "layout (std140, binding = 0) uniform ViewProjection { mat4 view; mat4 projection; };\n"
+      options.vertexSource = "layout (std140, binding = 0) uniform ViewProjection { mat4 view; mat4 projection; };\n"
                              "uniform vec3 verts[2];\n"
                              "uniform vec3 color;\n"
                              "layout (location = 0) out vec3 outColor;\n"
-                             "out gl_PerVertex {\n"
-                             "  vec4 gl_Position;\n"
-                             "  float gl_PointSize;\n"
-                             "  float gl_ClipDistance[];\n"
-                             "};\n"
                              "void main() {\n"
                              "  gl_Position = projection * view * vec4(verts[gl_VertexID], 1.0);\n"
                              "  outColor = color;\n"
                              "}";
-      options.fragmentSource = "#version 460\n"
-                               "layout (location = 0) in vec3 color;\n"
+      options.fragmentSource = "layout (location = 0) in vec3 color;\n"
                                "layout (location = 0) out vec4 fragColor;\n"
                                "void main() {\n"
                                "  fragColor = vec4(color, 1.0);\n"
+                               "}";
+      shader->initialize(options);
+    }
+
+    {
+      auto shader = m_resources.create<Shader>("debug.drawscreentext");
+      Shader::Options options{};
+      options.vertexSource = "layout (location = 0) out vec2 outUV;\n"
+                             "uniform vec2 screenPosition;\n"
+                             "uniform vec2 screenCharSize;\n"
+                             "uniform vec2 charBottomLeft;\n"
+                             "uniform vec2 charSize;\n"
+                             "void main() {\n"
+                             "  const vec2 verts[6] = vec2[](vec2(0.0, 0.0), vec2(1.0, 0.0), vec2(1.0, 1.0), vec2(0.0, 0.0), vec2(1.0, 1.0), vec2(0.0, 1.0));\n"
+                             "  gl_Position = vec4(screenPosition + screenCharSize * verts[gl_VertexID], 0.0, 1.0);\n"
+                             "  outUV = charBottomLeft + charSize * verts[gl_VertexID];\n"
+                             "}";
+      options.fragmentSource = "layout (location = 0) in vec2 uv;\n"
+                               "layout (location = 0) out vec4 fragColor;\n"
+                               "layout (binding = 0) uniform sampler2D textureFont;\n"
+                               "void main() {\n"
+                               "  vec3 color = texture(textureFont, uv).xyz;"
+                               "  if (color.y < 0.5) discard;\n"
+                               "  fragColor = vec4(texture(textureFont, uv).xyz, 1.0);\n"
                                "}";
       shader->initialize(options);
     }
@@ -1138,6 +1262,13 @@ public:
       auto material = m_resources.create<Material>("su37.engine");
       material->initialize(m_resources.get<Shader>("default"));
       material->setValue("Material.color", glm::vec3{ 0.100000f, 0.100000f, 0.100000f });
+    }
+
+    {
+      Texture2D::Options options;
+      options.path = "./debug.font.png";
+      auto texture = m_resources.create<Texture2D>("debug.font");
+      texture->initialize(options);
     }
   }
 
@@ -1396,16 +1527,50 @@ public:
       }
 
       glDisable(GL_DEPTH_TEST);
-      Shader* lineShader = m_resources.get<Shader>("debug.drawline");
-      glBindVertexArray(vaoDebug);
-      glBindProgramPipeline(lineShader->programPipeline);
-      for (auto& command : m_debug.m_drawLineCommands) {
-        lineShader->vertShader.setUniformArray("verts[0]", 2, command.verts);
-        lineShader->vertShader.setUniform("color", command.color);
-        glDrawArrays(GL_LINES, 0, 2);
+      {
+        Shader* lineShader = m_resources.get<Shader>("debug.drawline");
+        glBindVertexArray(vaoDebug);
+        glBindProgramPipeline(lineShader->programPipeline);
+        for (auto& command : m_debug.m_drawLineCommands) {
+          lineShader->vertShader.setUniformArray("verts[0]", 2, command.verts);
+          lineShader->vertShader.setUniform("color", command.color);
+          glDrawArrays(GL_LINES, 0, 2);
+        }
       }
+
+      {
+        Shader* screenTextShader = m_resources.get<Shader>("debug.drawscreentext");
+        Texture2D* textTexture = m_resources.get<Texture2D>("debug.font");
+        glBindVertexArray(vaoDebug);
+        glBindProgramPipeline(screenTextShader->programPipeline);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, textTexture->handle);
+
+        const float charTextureWidth = 1.0f / 16.0f;
+        const float charTextureHeight = 1.0f / 16.0f;
+        const float charScreenWidth = 1.0f / 20.0f * (float(textTexture->width) / float(textTexture->height));
+        const float charScreenHeight = 1.0f / 20.0f;
+
+        for (auto& command : m_debug.m_drawScreenTextCommands) {
+          float x = command.topleft.x;
+          float y = command.topleft.y;
+          for (const char* c = command.str.c_str(); *c != 0; c++) {
+            uint32_t cx = *c % 16;
+            uint32_t cy = 15 - *c / 16;
+            screenTextShader->vertShader.setUniform("screenPosition", glm::vec2(x, y));
+            screenTextShader->vertShader.setUniform("screenCharSize", glm::vec2(charScreenWidth, charScreenHeight));
+            screenTextShader->vertShader.setUniform("charBottomLeft", glm::vec2(cx * charTextureWidth, cy * charTextureHeight));
+            screenTextShader->vertShader.setUniform("charSize", glm::vec2(charTextureWidth, charTextureHeight));
+            glDrawArrays(GL_TRIANGLES, 0, 6);
+            x += charScreenWidth;
+          }
+        }
+        glBindTexture(GL_TEXTURE_2D, 0);
+      }
+
       glBindVertexArray(0);
       glBindProgramPipeline(0);
+
       m_debug.clear();
 
       SDL_GL_SwapWindow(m_window);
