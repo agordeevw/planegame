@@ -869,7 +869,7 @@ public:
   using Script::Script;
 
   void initialize() override {
-    velocity = 10.0f * transform.forward();
+    velocity = 20.0f * transform.forward();
   }
 
   void update() override {
@@ -887,30 +887,32 @@ public:
     if (input().keyDown[SDL_SCANCODE_A]) {
       transform.rotateLocal(glm::vec3{ 0.0f, 0.0f, 1.0f }, +rollSpeed * time().dt);
     }
-    if (input().keyDown[SDL_SCANCODE_Q]) {
+    if (input().keyDown[SDL_SCANCODE_E]) {
       transform.rotateLocal(glm::vec3{ 0.0f, 1.0f, 0.0f }, -yawSpeed * time().dt);
     }
-    if (input().keyDown[SDL_SCANCODE_E]) {
+    if (input().keyDown[SDL_SCANCODE_Q]) {
       transform.rotateLocal(glm::vec3{ 0.0f, 1.0f, 0.0f }, +yawSpeed * time().dt);
     }
 
     glm::vec3 forward = transform.forward();
-    glm::vec3 up = transform.forward();
+    glm::vec3 up = transform.up();
 
-    float thrust = 1.5f;
-    float drag = 0.25f;
-    float weight = 0.25f;
+    float thrust = 10.0f;
+    float drag = (0.2f + 0.25f * std::abs(glm::dot(up, glm::normalize(velocity)))) * l2Norm(velocity);
+    float weight = 5.0f;
     float lift = 0.25f * l2Norm(velocity);
 
     glm::vec3 accel{};
-    velocity += ((thrust - drag * l2Norm(velocity)) * forward + lift * up + weight * glm::vec3(0.0f, -1.0f, 0.0f)) * time().dt;
+    velocity += (thrust * forward + lift * up - drag * glm::normalize(velocity) + weight * glm::vec3(0.0f, -1.0f, 0.0f)) * time().dt;
     transform.position += velocity * time().dt;
 
-    char speed[256];
-    sprintf(speed, "%f", glm::length(velocity));
     debug().drawLine(transform.position, transform.position + velocity, glm::vec3{ 1.0f, 1.0f, 1.0f });
     debug().drawLine(transform.position, transform.position + 5.0f * glm::vec3{ 0.0f, 0.0f, -1.0f }, glm::vec3{ 0.0f, 1.0f, 0.0f });
+    char speed[256];
+    sprintf(speed, "%f", glm::length(velocity));
     debug().drawScreenText({ -0.5f, 0.0f }, speed);
+    sprintf(speed, "%f", transform.position.y);
+    debug().drawScreenText({ +0.5f, 0.0f }, speed);
   }
 
   float minSpeed = 5.0f;
