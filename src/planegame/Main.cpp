@@ -11,6 +11,16 @@
 #include <unordered_map>
 #include <vector>
 
+static constexpr uint64_t sid(const char str[]) {
+  uint64_t ret = 1242;
+  for (const char* s = str; *s != 0; s++) {
+    ret = ret * (*s) + 12643;
+  }
+  return ret;
+}
+
+#define SID(name) std::integral_constant<uint64_t, sid(name)>::value
+
 struct Vertex {
   glm::vec3 position;
   glm::vec3 normal;
@@ -298,6 +308,7 @@ struct ShaderProgram {
   struct UniformBlock {
     struct Entry {
       std::string name;
+      uint64_t sid;
       GLint type;
       GLint size;
       GLint offset;
@@ -313,6 +324,7 @@ struct ShaderProgram {
     }
 
     std::string name;
+    uint64_t sid;
     GLuint binding;
     GLuint size;
     GLuint index;
@@ -321,6 +333,7 @@ struct ShaderProgram {
 
   struct Uniform {
     std::string name;
+    uint64_t sid;
     GLint type;
     GLint size;
     GLint location;
@@ -435,6 +448,7 @@ private:
       GLint values[numProps];
       glGetProgramResourceiv(program, GL_UNIFORM_BLOCK, i, numProps, props, numProps, nullptr, values);
       uniformBlocks[i].name = uniformBlockNameBuffer;
+      uniformBlocks[i].sid = sid(uniformBlockNameBuffer);
       uniformBlocks[i].binding = values[0];
       uniformBlocks[i].size = values[1];
       uniformBlocks[i].index = i;
@@ -453,6 +467,7 @@ private:
       if (blockIndex != -1) {
         UniformBlock::Entry entry;
         entry.name = uniformNameBuffer;
+        entry.sid = sid(uniformNameBuffer);
         entry.type = values[0];
         entry.size = values[1];
         entry.offset = values[2];
@@ -462,6 +477,7 @@ private:
       else {
         Uniform uniform;
         uniform.name = uniformNameBuffer;
+        uniform.sid = sid(uniformNameBuffer);
         uniform.type = values[0];
         uniform.size = values[1];
         uniform.location = values[5];
