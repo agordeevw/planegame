@@ -11,15 +11,26 @@
 #include <unordered_map>
 #include <vector>
 
-static constexpr uint64_t sid(const char str[]) {
+struct StringID {
+  uint64_t value;
+};
+
+struct StringIDHasher {
+  uint64_t operator()(StringID sid) const { return std::hash<uint64_t>()(sid.value); }
+};
+
+bool operator==(StringID a, StringID b) { return a.value == b.value; }
+
+static constexpr StringID makeSID(const char str[]) {
   uint64_t ret = 1242;
   for (const char* s = str; *s != 0; s++) {
-    ret = ret * (*s) + 12643;
+    ret = ret * uint64_t(*s) + 12643;
   }
-  return ret;
+  return StringID{ ret };
 }
 
-#define SID(name) std::integral_constant<uint64_t, sid(name)>::value
+#define SID(name) \
+  StringID { std::integral_constant<uint64_t, makeSID(name).value>::value }
 
 struct Vertex {
   glm::vec3 position;
@@ -308,7 +319,7 @@ struct ShaderProgram {
   struct UniformBlock {
     struct Entry {
       std::string name;
-      uint64_t sid;
+      StringID sid;
       GLint type;
       GLint size;
       GLint offset;
@@ -324,7 +335,7 @@ struct ShaderProgram {
     }
 
     std::string name;
-    uint64_t sid;
+    StringID sid;
     GLuint binding;
     GLuint size;
     GLuint index;
@@ -333,7 +344,7 @@ struct ShaderProgram {
 
   struct Uniform {
     std::string name;
-    uint64_t sid;
+    StringID sid;
     GLint type;
     GLint size;
     GLint location;
@@ -364,16 +375,16 @@ struct ShaderProgram {
     return status;
   }
 
-  const UniformBlock* getUniformBlock(const char* name) const {
-    auto it = std::find_if(uniformBlocks.begin(), uniformBlocks.end(), [name](const UniformBlock& block) { return block.name == name; });
+  const UniformBlock* getUniformBlock(StringID sid) const {
+    auto it = std::find_if(uniformBlocks.begin(), uniformBlocks.end(), [sid](const UniformBlock& block) { return block.sid == sid; });
     if (it != uniformBlocks.end())
       return &(*it);
     else
       return nullptr;
   }
 
-  const Uniform* getUniform(const char* name) const {
-    auto it = std::find_if(uniforms.begin(), uniforms.end(), [name](const Uniform& block) { return block.name == name; });
+  const Uniform* getUniform(StringID sid) const {
+    auto it = std::find_if(uniforms.begin(), uniforms.end(), [sid](const Uniform& block) { return block.sid == sid; });
     if (it != uniforms.end())
       return &(*it);
     else
@@ -381,8 +392,8 @@ struct ShaderProgram {
   }
 
   template <class T>
-  void setUniform(const char* uniformName, const T& value) {
-    const Uniform* pUniform = getUniform(uniformName);
+  void setUniform(StringID sid, const T& value) {
+    const Uniform* pUniform = getUniform(sid);
     if (pUniform) {
       if constexpr (std::is_same_v<T, int>)
         glProgramUniform1i(program, pUniform->location, value);
@@ -404,8 +415,8 @@ struct ShaderProgram {
   }
 
   template <class T>
-  void setUniformArray(const char* uniformName, uint32_t count, const T* value) {
-    const Uniform* pUniform = getUniform(uniformName);
+  void setUniformArray(StringID sid, uint32_t count, const T* value) {
+    const Uniform* pUniform = getUniform(sid);
     if (pUniform) {
       if constexpr (std::is_same_v<T, int>)
         glProgramUniform1iv(program, pUniform->location, count, reinterpret_cast<const float*>(value));
@@ -448,7 +459,7 @@ private:
       GLint values[numProps];
       glGetProgramResourceiv(program, GL_UNIFORM_BLOCK, i, numProps, props, numProps, nullptr, values);
       uniformBlocks[i].name = uniformBlockNameBuffer;
-      uniformBlocks[i].sid = sid(uniformBlockNameBuffer);
+      uniformBlocks[i].sid = makeSID(uniformBlockNameBuffer);
       uniformBlocks[i].binding = values[0];
       uniformBlocks[i].size = values[1];
       uniformBlocks[i].index = i;
@@ -467,7 +478,7 @@ private:
       if (blockIndex != -1) {
         UniformBlock::Entry entry;
         entry.name = uniformNameBuffer;
-        entry.sid = sid(uniformNameBuffer);
+        entry.sid = makeSID(uniformNameBuffer);
         entry.type = values[0];
         entry.size = values[1];
         entry.offset = values[2];
@@ -477,7 +488,7 @@ private:
       else {
         Uniform uniform;
         uniform.name = uniformNameBuffer;
-        uniform.sid = sid(uniformNameBuffer);
+        uniform.sid = makeSID(uniformNameBuffer);
         uniform.type = values[0];
         uniform.size = values[1];
         uniform.location = values[5];
@@ -581,12 +592,14 @@ struct Texture2D {
 struct Material {
   void initialize(Shader* shader) {
     this->shader = shader;
-    materialUniformBlock = shader->fragShader.getUniformBlock("Material");
+    materialUniformBlock = shader->fragShader.getUniformBlock(SID("Material"));
     uniformStorage = std::make_unique<char[]>(materialUniformBlock->size);
   }
 
   template <class T>
   void setIndexedValue(const char* name, int index, const T& value) {
+    if (!materialUniformBlock)
+      return;
     const ShaderProgram::UniformBlock::Entry* entry = materialUniformBlock->getEntry(name);
     if (!entry)
       return;
@@ -711,11 +724,13 @@ public:
 class Resources {
 public:
   template <class T, class... Args>
-  T* create(std::string name, Args&&... args) {
+  T* create(StringID sid, Args&&... args) {
     auto res = std::make_unique<T>(std::forward<Args>(args)...);
     T* ret = res.get();
-    auto addResource = [&name, &res](auto& resourceVector, std::unordered_map<std::string, std::size_t>& mapNameToResourceIdx) {
-      mapNameToResourceIdx[std::move(name)] = resourceVector.size();
+    auto addResource = [&sid, &res](auto& resourceVector, std::unordered_map<StringID, std::size_t, StringIDHasher>& mapNameToResourceIdx) {
+      if (mapNameToResourceIdx.find(sid) != mapNameToResourceIdx.end())
+        throw std::runtime_error("resource sid collision");
+      mapNameToResourceIdx[std::move(sid)] = resourceVector.size();
       resourceVector.push_back(std::move(res));
     };
 
@@ -739,9 +754,9 @@ public:
   }
 
   template <class T>
-  T* get(const std::string& name) {
-    auto getResource = [&name](auto& resourceVector, std::unordered_map<std::string, std::size_t>& mapNameToResourceIdx) {
-      return resourceVector[mapNameToResourceIdx.at(name)].get();
+  T* get(StringID sid) {
+    auto getResource = [&sid](auto& resourceVector, std::unordered_map<StringID, std::size_t, StringIDHasher>& mapNameToResourceIdx) {
+      return resourceVector[mapNameToResourceIdx.at(sid)].get();
     };
 
     T* ret;
@@ -768,10 +783,10 @@ private:
   std::vector<std::unique_ptr<Shader>> shaders;
   std::vector<std::unique_ptr<Material>> materials;
   std::vector<std::unique_ptr<Texture2D>> textures2D;
-  std::unordered_map<std::string, std::size_t> nameToMeshIdx;
-  std::unordered_map<std::string, std::size_t> nameToShaderIdx;
-  std::unordered_map<std::string, std::size_t> nameToMaterialIdx;
-  std::unordered_map<std::string, std::size_t> nameToTexture2DIdx;
+  std::unordered_map<StringID, std::size_t, StringIDHasher> nameToMeshIdx;
+  std::unordered_map<StringID, std::size_t, StringIDHasher> nameToShaderIdx;
+  std::unordered_map<StringID, std::size_t, StringIDHasher> nameToMaterialIdx;
+  std::unordered_map<StringID, std::size_t, StringIDHasher> nameToTexture2DIdx;
 };
 
 class Debug {
@@ -981,16 +996,16 @@ public:
       newObject->addComponent<MovingObjectScript>();
       {
         MeshRenderer* meshRenderer = newObject->addComponent<MeshRenderer>();
-        meshRenderer->mesh = resources().get<Mesh>("object");
-        meshRenderer->materials = { resources().get<Material>("default.object") };
+        meshRenderer->mesh = resources().get<Mesh>(SID("object"));
+        meshRenderer->materials = { resources().get<Material>(SID("default.object")) };
       }
       generatedObjects.push_back(newObject);
       Object* newObjectParent = scene().makeObject();
       newObjectParent->addComponent<MovingObjectScript>();
       {
         MeshRenderer* meshRenderer = newObjectParent->addComponent<MeshRenderer>();
-        meshRenderer->mesh = resources().get<Mesh>("object");
-        meshRenderer->materials = { resources().get<Material>("default.object") };
+        meshRenderer->mesh = resources().get<Mesh>(SID("object"));
+        meshRenderer->materials = { resources().get<Material>(SID("default.object")) };
       }
       newObjectParent->addChild(newObject);
       generatedObjects.push_back(newObjectParent);
@@ -1103,7 +1118,7 @@ public:
         fclose(file);
       }
 
-      auto mesh = m_resources.create<Mesh>("su37");
+      auto mesh = m_resources.create<Mesh>(SID("su37"));
 
       Mesh::Options options;
       options.attributes = {
@@ -1124,7 +1139,7 @@ public:
     }
 
     {
-      auto mesh = m_resources.create<Mesh>("land");
+      auto mesh = m_resources.create<Mesh>(SID("land"));
       Vertex vertices[]{
         Vertex{ { -1000.0f, 0.0f, -1000.0f }, { 0.0f, 1.0f, 0.0f } },
         Vertex{ { 1000.0f, 0.0f, -1000.0f }, { 0.0f, 1.0f, 0.0f } },
@@ -1147,7 +1162,7 @@ public:
     }
 
     {
-      auto mesh = m_resources.create<Mesh>("object");
+      auto mesh = m_resources.create<Mesh>(SID("object"));
       Vertex vertices[]{
         Vertex{ { -1.0, -1.0, 0.0 }, { 1.0, 0.0, 0.0 } },
         Vertex{ { 1.0, -1.0, 0.0 }, { 0.0, 1.0, 0.0 } },
@@ -1169,7 +1184,7 @@ public:
     }
 
     {
-      auto shader = m_resources.create<Shader>("default");
+      auto shader = m_resources.create<Shader>(SID("default"));
       Shader::Options options{};
       options.vertexSource = "layout (location = 0) in vec3 inPosition;\n"
                              "layout (location = 1) in vec3 inNormal;\n"
@@ -1210,7 +1225,7 @@ public:
     }
 
     {
-      auto shader = m_resources.create<Shader>("debug.drawline");
+      auto shader = m_resources.create<Shader>(SID("debug.drawline"));
       Shader::Options options{};
       options.vertexSource = "layout (std140, binding = 0) uniform ViewProjection { mat4 view; mat4 projection; };\n"
                              "uniform vec3 verts[2];\n"
@@ -1229,7 +1244,7 @@ public:
     }
 
     {
-      auto shader = m_resources.create<Shader>("debug.drawscreentext");
+      auto shader = m_resources.create<Shader>(SID("debug.drawscreentext"));
       Shader::Options options{};
       options.vertexSource = "layout (location = 0) out vec2 outUV;\n"
                              "uniform vec2 screenPosition;\n"
@@ -1253,39 +1268,39 @@ public:
     }
 
     {
-      auto material = m_resources.create<Material>("default.land");
-      material->initialize(m_resources.get<Shader>("default"));
+      auto material = m_resources.create<Material>(SID("default.land"));
+      material->initialize(m_resources.get<Shader>(SID("default")));
       material->setValue("Material.color", glm::vec3{ 0.0f, 1.0f, 0.0f });
     }
 
     {
-      auto material = m_resources.create<Material>("default.object");
-      material->initialize(m_resources.get<Shader>("default"));
+      auto material = m_resources.create<Material>(SID("default.object"));
+      material->initialize(m_resources.get<Shader>(SID("default")));
       material->setValue("Material.color", glm::vec3{ 1.0f, 1.0f, 1.0f });
     }
 
     {
-      auto material = m_resources.create<Material>("su37.body");
-      material->initialize(m_resources.get<Shader>("default"));
+      auto material = m_resources.create<Material>(SID("su37.body"));
+      material->initialize(m_resources.get<Shader>(SID("default")));
       material->setValue("Material.color", glm::vec3{ 0.2f, 0.400000f, 0.200000f });
     }
 
     {
-      auto material = m_resources.create<Material>("su37.cockpit");
-      material->initialize(m_resources.get<Shader>("default"));
+      auto material = m_resources.create<Material>(SID("su37.cockpit"));
+      material->initialize(m_resources.get<Shader>(SID("default")));
       material->setValue("Material.color", glm::vec3{ 0.274425f, 0.282128f, 0.800000f });
     }
 
     {
-      auto material = m_resources.create<Material>("su37.engine");
-      material->initialize(m_resources.get<Shader>("default"));
+      auto material = m_resources.create<Material>(SID("su37.engine"));
+      material->initialize(m_resources.get<Shader>(SID("default")));
       material->setValue("Material.color", glm::vec3{ 0.100000f, 0.100000f, 0.100000f });
     }
 
     {
       Texture2D::Options options;
       options.path = "./debug.font.png";
-      auto texture = m_resources.create<Texture2D>("debug.font");
+      auto texture = m_resources.create<Texture2D>(SID("debug.font"));
       texture->initialize(options);
     }
   }
@@ -1297,8 +1312,8 @@ public:
     Object* landObject = m_scene.makeObject();
     landObject->transform.position = { 0.0f, -10.0f, 0.0f };
     MeshRenderer* landObjectMeshRenderer = landObject->addComponent<MeshRenderer>();
-    landObjectMeshRenderer->mesh = m_resources.get<Mesh>("land");
-    landObjectMeshRenderer->materials.push_back(m_resources.get<Material>("default.land"));
+    landObjectMeshRenderer->mesh = m_resources.get<Mesh>(SID("land"));
+    landObjectMeshRenderer->materials.push_back(m_resources.get<Material>(SID("default.land")));
 
     Object* lights[2];
     lights[0] = m_scene.makeObject();
@@ -1313,10 +1328,10 @@ public:
       plane->tag = 0;
       plane->transform.position = { 0.0f, 10.0f, 0.0f };
       MeshRenderer* meshRenderer = plane->addComponent<MeshRenderer>();
-      meshRenderer->mesh = m_resources.get<Mesh>("su37");
-      meshRenderer->materials.push_back(m_resources.get<Material>("su37.body"));
-      meshRenderer->materials.push_back(m_resources.get<Material>("su37.cockpit"));
-      meshRenderer->materials.push_back(m_resources.get<Material>("su37.engine"));
+      meshRenderer->mesh = m_resources.get<Mesh>(SID("su37"));
+      meshRenderer->materials.push_back(m_resources.get<Material>(SID("su37.body")));
+      meshRenderer->materials.push_back(m_resources.get<Material>(SID("su37.cockpit")));
+      meshRenderer->materials.push_back(m_resources.get<Material>(SID("su37.engine")));
       plane->addComponent<PlaneControlScript>();
 
       Object* childLight = m_scene.makeObject();
@@ -1330,10 +1345,10 @@ public:
     {
       plane1->transform.position = { 0.0f, 10.0f, 0.0f };
       MeshRenderer* meshRenderer = plane1->addComponent<MeshRenderer>();
-      meshRenderer->mesh = m_resources.get<Mesh>("su37");
-      meshRenderer->materials.push_back(m_resources.get<Material>("su37.body"));
-      meshRenderer->materials.push_back(m_resources.get<Material>("su37.cockpit"));
-      meshRenderer->materials.push_back(m_resources.get<Material>("su37.engine"));
+      meshRenderer->mesh = m_resources.get<Mesh>(SID("su37"));
+      meshRenderer->materials.push_back(m_resources.get<Material>(SID("su37.body")));
+      meshRenderer->materials.push_back(m_resources.get<Material>(SID("su37.cockpit")));
+      meshRenderer->materials.push_back(m_resources.get<Material>(SID("su37.engine")));
     }
 
     Object* mainCameraObject = m_scene.makeObject();
@@ -1537,28 +1552,28 @@ public:
           const Material* material = meshRenderer->materials[i];
           glBindProgramPipeline(material->shader->programPipeline);
           glBindBufferRange(GL_UNIFORM_BUFFER, 2, uboMaterial[currentFrame], offsetForMaterial.at(material), material->materialUniformBlock->size);
-          material->shader->vertShader.setUniform("model", meshRenderer->transform.asMatrix4());
-          material->shader->vertShader.setUniform("time", float(m_time.timeSinceStart));
-          material->shader->fragShader.setUniform("time", float(m_time.timeSinceStart));
+          material->shader->vertShader.setUniform(SID("model"), meshRenderer->transform.asMatrix4());
+          material->shader->vertShader.setUniform(SID("time"), float(m_time.timeSinceStart));
+          material->shader->fragShader.setUniform(SID("time"), float(m_time.timeSinceStart));
           glDrawElements(GL_TRIANGLES, submesh.indexCount, GL_UNSIGNED_INT, reinterpret_cast<void*>(submesh.indexStart * sizeof(uint32_t)));
         }
       }
 
       glDisable(GL_DEPTH_TEST);
       {
-        Shader* lineShader = m_resources.get<Shader>("debug.drawline");
+        Shader* lineShader = m_resources.get<Shader>(SID("debug.drawline"));
         glBindVertexArray(vaoDebug);
         glBindProgramPipeline(lineShader->programPipeline);
         for (auto& command : m_debug.m_drawLineCommands) {
-          lineShader->vertShader.setUniformArray("verts[0]", 2, command.verts);
-          lineShader->vertShader.setUniform("color", command.color);
+          lineShader->vertShader.setUniformArray(SID("verts[0]"), 2, command.verts);
+          lineShader->vertShader.setUniform(SID("color"), command.color);
           glDrawArrays(GL_LINES, 0, 2);
         }
       }
 
       {
-        Shader* screenTextShader = m_resources.get<Shader>("debug.drawscreentext");
-        Texture2D* textTexture = m_resources.get<Texture2D>("debug.font");
+        Shader* screenTextShader = m_resources.get<Shader>(SID("debug.drawscreentext"));
+        Texture2D* textTexture = m_resources.get<Texture2D>(SID("debug.font"));
         glBindVertexArray(vaoDebug);
         glBindProgramPipeline(screenTextShader->programPipeline);
         glActiveTexture(GL_TEXTURE0);
@@ -1575,10 +1590,10 @@ public:
           for (const char* c = command.str.c_str(); *c != 0; c++) {
             uint32_t cx = *c % 16;
             uint32_t cy = 15 - *c / 16;
-            screenTextShader->vertShader.setUniform("screenPosition", glm::vec2(x, y));
-            screenTextShader->vertShader.setUniform("screenCharSize", glm::vec2(charScreenWidth, charScreenHeight));
-            screenTextShader->vertShader.setUniform("charBottomLeft", glm::vec2(cx * charTextureWidth, cy * charTextureHeight));
-            screenTextShader->vertShader.setUniform("charSize", glm::vec2(charTextureWidth, charTextureHeight));
+            screenTextShader->vertShader.setUniform(SID("screenPosition"), glm::vec2(x, y));
+            screenTextShader->vertShader.setUniform(SID("screenCharSize"), glm::vec2(charScreenWidth, charScreenHeight));
+            screenTextShader->vertShader.setUniform(SID("charBottomLeft"), glm::vec2(cx * charTextureWidth, cy * charTextureHeight));
+            screenTextShader->vertShader.setUniform(SID("charSize"), glm::vec2(charTextureWidth, charTextureHeight));
             glDrawArrays(GL_TRIANGLES, 0, 6);
             x += charScreenWidth;
           }
