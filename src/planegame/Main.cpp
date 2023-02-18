@@ -22,9 +22,9 @@ struct StringIDHasher {
 bool operator==(StringID a, StringID b) { return a.value == b.value; }
 
 static constexpr StringID makeSID(const char str[]) {
-  uint64_t ret = 1242;
+  uint64_t ret = 1242ULL;
   for (const char* s = str; *s != 0; s++) {
-    ret = ret * uint64_t(*s) + 12643;
+    ret = uint64_t(ret) ^ (uint64_t(*s) * 12421512ULL) + 12643ULL;
   }
   return StringID{ ret };
 }
@@ -549,6 +549,8 @@ struct Shader {
 struct Texture2D {
   struct Options {
     const char* path = nullptr;
+    GLuint minFilter = GL_LINEAR_MIPMAP_LINEAR;
+    GLuint magFilter = GL_LINEAR;
   };
 
   void initialize(const Options& options) {
@@ -581,6 +583,8 @@ struct Texture2D {
     glCreateTextures(GL_TEXTURE_2D, 1, &handle);
     glTextureStorage2D(handle, 1, GL_RGB8, surf->w, surf->h);
     glTextureSubImage2D(handle, 0, 0, 0, surf->w, surf->h, glformat, GL_UNSIGNED_BYTE, data.data());
+    glTextureParameteri(handle, GL_TEXTURE_MIN_FILTER, options.minFilter);
+    glTextureParameteri(handle, GL_TEXTURE_MAG_FILTER, options.magFilter);
     SDL_FreeSurface(surf);
   }
 
@@ -708,6 +712,10 @@ public:
     deleteTagged(objects);
   }
 
+private:
+  // setting up script context and iterate over objects
+  friend class Application;
+
   std::vector<std::unique_ptr<Object>> objects;
   struct Components {
     std::vector<std::unique_ptr<Camera>> cameras;
@@ -721,72 +729,65 @@ public:
   ScriptContext scriptContext;
 };
 
+template <class T>
+class NamedResource {
+public:
+  template <class... Args>
+  T* add(StringID sid, Args&&... args) {
+    auto res = std::make_unique<T>(std::forward<Args>(args)...);
+    T* ret = res.get();
+    if (nameToResourceIdx.find(sid) != nameToResourceIdx.end())
+      throw std::runtime_error("resource sid collision");
+    nameToResourceIdx[std::move(sid)] = resources.size();
+    resources.push_back(std::move(res));
+    return ret;
+  }
+
+  T* get(StringID sid) const {
+    return resources[nameToResourceIdx.at(sid)].get();
+  }
+
+private:
+  std::vector<std::unique_ptr<T>> resources;
+  std::unordered_map<StringID, std::size_t, StringIDHasher> nameToResourceIdx;
+};
+
 class Resources {
 public:
   template <class T, class... Args>
   T* create(StringID sid, Args&&... args) {
-    auto res = std::make_unique<T>(std::forward<Args>(args)...);
-    T* ret = res.get();
-    auto addResource = [&sid, &res](auto& resourceVector, std::unordered_map<StringID, std::size_t, StringIDHasher>& mapNameToResourceIdx) {
-      if (mapNameToResourceIdx.find(sid) != mapNameToResourceIdx.end())
-        throw std::runtime_error("resource sid collision");
-      mapNameToResourceIdx[std::move(sid)] = resourceVector.size();
-      resourceVector.push_back(std::move(res));
-    };
-
-    if constexpr (std::is_same_v<T, Mesh>) {
-      addResource(meshes, nameToMeshIdx);
-    }
-    else if constexpr (std::is_same_v<T, Shader>) {
-      addResource(shaders, nameToShaderIdx);
-    }
-    else if constexpr (std::is_same_v<T, Material>) {
-      addResource(materials, nameToMaterialIdx);
-    }
-    else if constexpr (std::is_same_v<T, Texture2D>) {
-      addResource(textures2D, nameToTexture2DIdx);
-    }
-    else {
-      static_assert(false, "Resource type not handled");
-    }
-
-    return ret;
+    return resource<T>().add(sid, std::forward<Args>(args)...);
   }
 
   template <class T>
   T* get(StringID sid) {
-    auto getResource = [&sid](auto& resourceVector, std::unordered_map<StringID, std::size_t, StringIDHasher>& mapNameToResourceIdx) {
-      return resourceVector[mapNameToResourceIdx.at(sid)].get();
-    };
+    return resource<T>().get(sid);
+  }
 
-    T* ret;
+private:
+  template <class T>
+  NamedResource<T>& resource() {
     if constexpr (std::is_same_v<T, Mesh>) {
-      ret = getResource(meshes, nameToMeshIdx);
+      return meshes;
     }
     else if constexpr (std::is_same_v<T, Shader>) {
-      ret = getResource(shaders, nameToShaderIdx);
+      return shaders;
     }
     else if constexpr (std::is_same_v<T, Material>) {
-      ret = getResource(materials, nameToMaterialIdx);
+      return materials;
     }
     else if constexpr (std::is_same_v<T, Texture2D>) {
-      ret = getResource(textures2D, nameToTexture2DIdx);
+      return textures2D;
     }
     else {
       static_assert(false, "Resource type not handled");
     }
-    return ret;
   }
 
-private:
-  std::vector<std::unique_ptr<Mesh>> meshes;
-  std::vector<std::unique_ptr<Shader>> shaders;
-  std::vector<std::unique_ptr<Material>> materials;
-  std::vector<std::unique_ptr<Texture2D>> textures2D;
-  std::unordered_map<StringID, std::size_t, StringIDHasher> nameToMeshIdx;
-  std::unordered_map<StringID, std::size_t, StringIDHasher> nameToShaderIdx;
-  std::unordered_map<StringID, std::size_t, StringIDHasher> nameToMaterialIdx;
-  std::unordered_map<StringID, std::size_t, StringIDHasher> nameToTexture2DIdx;
+  NamedResource<Mesh> meshes;
+  NamedResource<Shader> shaders;
+  NamedResource<Material> materials;
+  NamedResource<Texture2D> textures2D;
 };
 
 class Debug {
@@ -906,24 +907,76 @@ public:
   void update() override {
     Transform& transform = object.transform;
 
+    float inputPitchAcceleration = 0.0f;
+    float inputRollAcceleration = 0.0f;
+    float inputYawAcceleration = 0.0f;
+
     if (input().keyDown[SDL_SCANCODE_W]) {
-      transform.rotateLocal(glm::vec3{ 1.0f, 0.0f, 0.0f }, -pitchSpeed * time().dt);
+      inputPitchAcceleration = -pitchAcceleration;
     }
     if (input().keyDown[SDL_SCANCODE_S]) {
-      transform.rotateLocal(glm::vec3{ 1.0f, 0.0f, 0.0f }, +pitchSpeed * time().dt);
+      inputPitchAcceleration = +pitchAcceleration;
     }
     if (input().keyDown[SDL_SCANCODE_D]) {
-      transform.rotateLocal(glm::vec3{ 0.0f, 0.0f, 1.0f }, -rollSpeed * time().dt);
+      inputRollAcceleration = -rollAcceleration;
     }
     if (input().keyDown[SDL_SCANCODE_A]) {
-      transform.rotateLocal(glm::vec3{ 0.0f, 0.0f, 1.0f }, +rollSpeed * time().dt);
+      inputRollAcceleration = +rollAcceleration;
     }
     if (input().keyDown[SDL_SCANCODE_E]) {
-      transform.rotateLocal(glm::vec3{ 0.0f, 1.0f, 0.0f }, -yawSpeed * time().dt);
+      inputYawAcceleration = -yawAcceleration;
     }
     if (input().keyDown[SDL_SCANCODE_Q]) {
-      transform.rotateLocal(glm::vec3{ 0.0f, 1.0f, 0.0f }, +yawSpeed * time().dt);
+      inputYawAcceleration = +yawAcceleration;
     }
+
+    if (inputPitchAcceleration != 0.0f) {
+      currentPitchSpeed += inputPitchAcceleration * time().dt;
+    }
+    else {
+      if (currentPitchSpeed > 0.0f) {
+        currentPitchSpeed = std::clamp(currentPitchSpeed - 1.0f * time().dt, 0.0f, currentPitchSpeed);
+      }
+      else {
+        currentPitchSpeed = std::clamp(currentPitchSpeed + 1.0f * time().dt, currentPitchSpeed, 0.0f);
+      }
+    }
+
+    if (inputRollAcceleration != 0.0f) {
+      currentRollSpeed += inputRollAcceleration * time().dt;
+    }
+    else {
+      if (currentRollSpeed > 0.0f) {
+        currentRollSpeed = std::clamp(currentRollSpeed - 4.0f * time().dt, 0.0f, currentRollSpeed);
+      }
+      else {
+        currentRollSpeed = std::clamp(currentRollSpeed + 4.0f * time().dt, currentRollSpeed, 0.0f);
+      }
+    }
+
+    if (inputYawAcceleration != 0.0f) {
+      currentYawSpeed += inputYawAcceleration * time().dt;
+    }
+    else {
+      if (currentYawSpeed > 0.0f) {
+        currentYawSpeed = std::clamp(currentYawSpeed - 1.0f * time().dt, 0.0f, currentYawSpeed);
+      }
+      else {
+        currentYawSpeed = std::clamp(currentYawSpeed + 1.0f * time().dt, currentYawSpeed, 0.0f);
+      }
+    }
+
+    currentPitchSpeed = std::clamp(currentPitchSpeed, -maxPitchSpeed, maxPitchSpeed);
+    currentRollSpeed = std::clamp(currentRollSpeed, -maxRollSpeed, maxRollSpeed);
+    currentYawSpeed = std::clamp(currentYawSpeed, -maxYawSpeed, maxYawSpeed);
+
+    // todo: apply forces before applying transformations
+
+    transform.rotateLocal(glm::vec3{ 1.0f, 0.0f, 0.0f }, currentPitchSpeed * time().dt);
+    transform.rotateLocal(glm::vec3{ 0.0f, 0.0f, 1.0f }, currentRollSpeed * time().dt);
+    transform.rotateLocal(glm::vec3{ 0.0f, 1.0f, 0.0f }, currentYawSpeed * time().dt);
+
+    // delayed velocity vector?
 
     glm::vec3 forward = transform.forward();
     glm::vec3 up = transform.up();
@@ -947,9 +1000,15 @@ public:
   }
 
   float minSpeed = 5.0f;
-  float pitchSpeed = 1.0f;
-  float rollSpeed = 2.0f;
-  float yawSpeed = 0.25f;
+  float maxPitchSpeed = 1.0f;
+  float maxRollSpeed = 2.0f;
+  float maxYawSpeed = 0.25f;
+  float pitchAcceleration = 1.0f;
+  float rollAcceleration = 3.0f;
+  float yawAcceleration = 0.25f;
+  float currentPitchSpeed = 0.0f;
+  float currentRollSpeed = 0.0f;
+  float currentYawSpeed = 0.0f;
 
 private:
   glm::vec3 velocity{};
@@ -1081,62 +1140,64 @@ public:
     printf("gl error: %s\n", msg);
   }
 
-  void setUpResources() {
+  void importMesh(const char* filename, StringID sid) {
+    uint32_t vertexCount;
+    uint32_t indexCount;
+    uint32_t submeshCount;
+    std::vector<float> vertices;
+    std::vector<uint32_t> indices;
+    std::vector<uint32_t> submeshes;
     {
-      uint32_t vertexCount;
-      uint32_t indexCount;
-      uint32_t submeshCount;
-      std::vector<float> vertices;
-      std::vector<uint32_t> indices;
-      std::vector<uint32_t> submeshes;
-      {
-        FILE* file = fopen("su37.meshresource", "rb");
-        if (!file)
-          throw std::runtime_error("file not found");
+      FILE* file = fopen("su37.meshresource", "rb");
+      if (!file)
+        throw std::runtime_error("file not found");
 
-        if (fread(&vertexCount, sizeof(vertexCount), 1, file) != 1)
-          throw std::runtime_error("import error");
+      if (fread(&vertexCount, sizeof(vertexCount), 1, file) != 1)
+        throw std::runtime_error("import error");
 
-        vertices.resize(vertexCount * 6);
-        if (fread(vertices.data(), 6 * sizeof(float), vertexCount, file) != vertexCount)
-          throw std::runtime_error("import error");
+      vertices.resize(vertexCount * 6);
+      if (fread(vertices.data(), 6 * sizeof(float), vertexCount, file) != vertexCount)
+        throw std::runtime_error("import error");
 
-        if (fread(&indexCount, sizeof(indexCount), 1, file) != 1)
-          throw std::runtime_error("import error");
+      if (fread(&indexCount, sizeof(indexCount), 1, file) != 1)
+        throw std::runtime_error("import error");
 
-        indices.resize(indexCount);
-        if (fread(indices.data(), sizeof(uint32_t), indexCount, file) != indexCount)
-          throw std::runtime_error("import error");
+      indices.resize(indexCount);
+      if (fread(indices.data(), sizeof(uint32_t), indexCount, file) != indexCount)
+        throw std::runtime_error("import error");
 
-        if (fread(&submeshCount, sizeof(submeshCount), 1, file) != 1)
-          throw std::runtime_error("import error");
+      if (fread(&submeshCount, sizeof(submeshCount), 1, file) != 1)
+        throw std::runtime_error("import error");
 
-        submeshes.resize(2 * submeshCount);
-        if (fread(submeshes.data(), 2 * sizeof(uint32_t), submeshCount, file) != submeshCount)
-          throw std::runtime_error("import error");
+      submeshes.resize(2 * submeshCount);
+      if (fread(submeshes.data(), 2 * sizeof(uint32_t), submeshCount, file) != submeshCount)
+        throw std::runtime_error("import error");
 
-        fclose(file);
-      }
-
-      auto mesh = m_resources.create<Mesh>(SID("su37"));
-
-      Mesh::Options options;
-      options.attributes = {
-        Mesh::VertexAttribute(Mesh::VertexAttribute::Format::f32, 3),
-        Mesh::VertexAttribute(Mesh::VertexAttribute::Format::f32, 3)
-      };
-      options.indexBufferData = indices.data();
-      options.indexCount = indexCount;
-      options.indexFormat = Mesh::IndexFormat::u32;
-      options.vertexBufferData = vertices.data();
-      options.vertexCount = vertexCount;
-      mesh->initialize(options);
-
-      mesh->submeshes.resize(submeshCount);
-      for (uint32_t i = 0; i < submeshCount; i++) {
-        mesh->submeshes[i] = { submeshes[2 * i + 0], submeshes[2 * i + 1] };
-      }
+      fclose(file);
     }
+
+    auto mesh = m_resources.create<Mesh>(sid);
+
+    Mesh::Options options;
+    options.attributes = {
+      Mesh::VertexAttribute(Mesh::VertexAttribute::Format::f32, 3),
+      Mesh::VertexAttribute(Mesh::VertexAttribute::Format::f32, 3)
+    };
+    options.indexBufferData = indices.data();
+    options.indexCount = indexCount;
+    options.indexFormat = Mesh::IndexFormat::u32;
+    options.vertexBufferData = vertices.data();
+    options.vertexCount = vertexCount;
+    mesh->initialize(options);
+
+    mesh->submeshes.resize(submeshCount);
+    for (uint32_t i = 0; i < submeshCount; i++) {
+      mesh->submeshes[i] = { submeshes[2 * i + 0], submeshes[2 * i + 1] };
+    }
+  }
+
+  void setUpResources() {
+    importMesh("su37.meshresource", SID("su37"));
 
     {
       auto mesh = m_resources.create<Mesh>(SID("land"));
@@ -1300,6 +1361,8 @@ public:
     {
       Texture2D::Options options;
       options.path = "./debug.font.png";
+      options.magFilter = GL_NEAREST;
+      options.minFilter = GL_NEAREST;
       auto texture = m_resources.create<Texture2D>(SID("debug.font"));
       texture->initialize(options);
     }
@@ -1576,8 +1639,7 @@ public:
         Texture2D* textTexture = m_resources.get<Texture2D>(SID("debug.font"));
         glBindVertexArray(vaoDebug);
         glBindProgramPipeline(screenTextShader->programPipeline);
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, textTexture->handle);
+        glBindTextures(0, 1, &textTexture->handle);
 
         const float charTextureWidth = 1.0f / 16.0f;
         const float charTextureHeight = 1.0f / 16.0f;
@@ -1598,7 +1660,6 @@ public:
             x += charScreenWidth;
           }
         }
-        glBindTexture(GL_TEXTURE_2D, 0);
       }
 
       glBindVertexArray(0);
