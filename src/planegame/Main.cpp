@@ -169,7 +169,13 @@ public:
   }
 
   glm::mat4x4 projectionMatrix4() const {
-    return glm::perspective(fov, aspectRatio, 0.01f, 1000.0f);
+    float f = 1.0f / glm::tan(fov * 0.5f);
+    float zNear = 0.01f;
+    return glm::mat4(
+      f / aspectRatio, 0.0f, 0.0f, 0.0f,
+      0.0f, f, 0.0f, 0.0f,
+      0.0f, 0.0f, 0.0f, -1.0f,
+      0.0f, 0.0f, zNear, 0.0f);
   }
 
   float fov = glm::radians(90.0f);
@@ -190,15 +196,51 @@ struct ScriptContext {
   Debug* debug;
 };
 
+#define SCRIPT_REGISTER_PROPERTY(fieldName) registerProperty({ #fieldName, fieldName })
+
 class Script : public Component {
 public:
+  struct NamedProperty {
+    enum class Type {
+      Float,
+      Vec2,
+      Vec3,
+    };
+
+    NamedProperty(const char* name, float& value) {
+      type = Type::Float;
+      ptr = &value;
+      this->name = name;
+    }
+
+    NamedProperty(const char* name, glm::vec2& value) {
+      type = Type::Vec2;
+      ptr = &value;
+      this->name = name;
+    }
+
+    NamedProperty(const char* name, glm::vec3& value) {
+      type = Type::Vec3;
+      ptr = &value;
+      this->name = name;
+    }
+
+    Type type;
+    void* ptr = nullptr;
+    bool modifiable = false;
+    const char* name = nullptr;
+  };
+
   Script(Object& object)
-    : Component(object) {}
+    : Component(object) {
+    SCRIPT_REGISTER_PROPERTY(transform.position);
+  }
   virtual ~Script() = default;
 
   virtual void initialize() {}
   virtual void update() = 0;
 
+protected:
   Scene& scene() { return *m_context.scene; }
   const Input& input() { return *m_context.input; }
   const Time& time() { return *m_context.time; }
@@ -206,10 +248,17 @@ public:
   Resources& resources() { return *m_context.resources; }
   Debug& debug() { return *m_context.debug; }
 
+  void registerProperty(NamedProperty property) {
+    m_properties.push_back(property);
+    m_mapNameIDToPropertyIndex[makeSID(property.name)] = m_properties.size() - 1;
+  }
+
 private:
   friend class Scene;
 
   ScriptContext m_context;
+  std::vector<NamedProperty> m_properties;
+  std::unordered_map<StringID, std::size_t, StringIDHasher> m_mapNameIDToPropertyIndex;
 };
 
 struct Mesh {
@@ -597,7 +646,8 @@ struct Material {
   void initialize(Shader* shader) {
     this->shader = shader;
     materialUniformBlock = shader->fragShader.getUniformBlock(SID("Material"));
-    uniformStorage = std::make_unique<char[]>(materialUniformBlock->size);
+    if (materialUniformBlock)
+      uniformStorage = std::make_unique<char[]>(materialUniformBlock->size);
   }
 
   template <class T>
@@ -797,6 +847,11 @@ public:
     glm::vec3 color;
   };
 
+  struct DrawScreenLineCommand {
+    glm::vec2 verts[2];
+    glm::vec3 color;
+  };
+
   struct DrawScreenTextCommand {
     glm::vec2 topleft;
     std::string str;
@@ -810,6 +865,14 @@ public:
     m_drawLineCommands.push_back(command);
   }
 
+  void drawScreenLine(glm::vec2 start, glm::vec2 end, glm::vec3 color) {
+    DrawScreenLineCommand command;
+    command.verts[0] = start;
+    command.verts[1] = end;
+    command.color = color;
+    m_drawScreenLineCommands.push_back(command);
+  }
+
   void drawScreenText(glm::vec2 topleft, const char* str) {
     DrawScreenTextCommand command;
     command.topleft = topleft;
@@ -819,6 +882,7 @@ public:
 
   void clear() {
     m_drawLineCommands.clear();
+    m_drawScreenLineCommands.clear();
     m_drawScreenTextCommands.clear();
   }
 
@@ -826,6 +890,7 @@ private:
   friend class Application;
 
   std::vector<DrawLineCommand> m_drawLineCommands;
+  std::vector<DrawScreenLineCommand> m_drawScreenLineCommands;
   std::vector<DrawScreenTextCommand> m_drawScreenTextCommands;
 };
 
@@ -879,6 +944,12 @@ public:
     glm::vec3 forward = m_chasedObject->transform.forward();
     glm::vec3 up = m_chasedObject->transform.up();
     glm::vec3 right = m_chasedObject->transform.right();
+
+    if (input().keyDown[SDL_SCANCODE_C]) {
+      transform.rotation = glm::quatLookAt(glm::normalize(m_chasedObject->transform.position - transform.position), transform.up());
+      return;
+    }
+
     if (input().keyDown[SDL_SCANCODE_LALT]) {
       horizAngleOffset += input().mousedx * time().dt;
     }
@@ -886,59 +957,138 @@ public:
       horizAngleOffset = 0.0f;
     }
 
-    glm::vec3 offset = -5.0f * forward + 1.0f * up;
+    glm::vec3 offset = forwardOffset * forward + upOffset * up;
     offset = glm::rotate(glm::angleAxis(horizAngleOffset, up), offset);
     transform.position = m_chasedObject->transform.position + offset;
-    transform.rotation = glm::quatLookAt(glm::normalize(m_chasedObject->transform.position + 1.0f * up - transform.position), m_chasedObject->transform.up());
+    transform.rotation = glm::quatLookAt(glm::normalize(m_chasedObject->transform.position + lookAtUpOffset * up - transform.position), m_chasedObject->transform.up());
   }
 
   float horizAngleOffset = 0.0f;
+  float forwardOffset = -5.0f; //-5.0f;
+  float upOffset = 1.0f; // 1.0f;
+  float lookAtUpOffset = 1.0f; // 1.0f;
   Object* m_chasedObject = nullptr;
 };
 
 class PlaneControlScript final : public Script {
 public:
-  using Script::Script;
+  PlaneControlScript(Object& object) : Script(object) {
+    SCRIPT_REGISTER_PROPERTY(velocityShiftRate);
+    SCRIPT_REGISTER_PROPERTY(minSpeed);
+    SCRIPT_REGISTER_PROPERTY(maxPitchSpeed);
+    SCRIPT_REGISTER_PROPERTY(maxRollSpeed);
+    SCRIPT_REGISTER_PROPERTY(maxYawSpeed);
+    SCRIPT_REGISTER_PROPERTY(pitchAcceleration);
+    SCRIPT_REGISTER_PROPERTY(rollAcceleration);
+    SCRIPT_REGISTER_PROPERTY(yawAcceleration);
+    SCRIPT_REGISTER_PROPERTY(currentPitchSpeed);
+    SCRIPT_REGISTER_PROPERTY(currentRollSpeed);
+    SCRIPT_REGISTER_PROPERTY(currentYawSpeed);
+    SCRIPT_REGISTER_PROPERTY(targetSpeed);
+  }
 
   void initialize() override {
-    velocity = 20.0f * transform.forward();
+    velocity = targetSpeed * transform.forward();
   }
 
   void update() override {
     Transform& transform = object.transform;
 
+    const glm::vec3 forward = transform.forward();
+    const glm::vec3 up = transform.up();
+    const glm::vec3 right = transform.right();
+    const glm::vec3 globalUp = glm::vec3{ 0.0f, 1.0f, 0.0f };
+
+    bool stalling = false;
+
+    float inputThrustAcceleration = 0.0f;
+    if (input().keyDown[SDL_SCANCODE_LSHIFT]) {
+      inputThrustAcceleration = 100.0f;
+    }
+    else if (input().keyDown[SDL_SCANCODE_LCTRL]) {
+      inputThrustAcceleration = -100.0f;
+    }
+
+    if (inputThrustAcceleration != 0.0f) {
+      currentThrust += inputThrustAcceleration * time().dt;
+    }
+    else {
+      if (currentThrust > baseThrust) {
+        currentThrust = std::clamp(currentThrust - 50.0f * time().dt, baseThrust, currentThrust);
+      }
+      else {
+        currentThrust = std::clamp(currentThrust + 50.0f * time().dt, currentThrust, baseThrust);
+      }
+    }
+    currentThrust = std::clamp(currentThrust, minThrust, maxThrust);
+
+    float weight = 20.0f;
+    float lift = 20.0f;
+    if (targetSpeed < 15.0f) {
+      stalling = true;
+      lift = 10.0f - (15.0f - targetSpeed);
+    }
+
+    glm::vec3 linearAcceleration = forward * currentThrust - weight * globalUp + lift * up;
+    targetSpeed = 20.0f * (glm::length(linearAcceleration) / baseThrust);
+
+    // estimate linear acceleration vector which is used to determine base rotation speed
+
+    float forwardDot = glm::dot(forward, linearAcceleration);
+    float upDot = glm::dot(up, linearAcceleration);
+    float rightDot = glm::dot(right, linearAcceleration);
+
+    // velocity vector must become aligned with linear acceleration
+
+    glm::vec3 targetVelocity = targetSpeed * glm::normalize(linearAcceleration);
+    glm::vec3 deltaVelocity = targetVelocity - velocity;
+    velocity += velocityShiftRate * deltaVelocity * time().dt;
+    velocity = targetSpeed * glm::normalize(velocity);
+    transform.position += velocity * time().dt;
+
+    // rotation speed based on plane position
+    float basePitchSpeed = 0.0f;
+    float baseRollSpeed = 0.0f;
+    float baseYawSpeed = 0.0f;
+    {
+      basePitchSpeed = 0.01f * upDot;
+    }
+
+    // rotation acceleration based on player input
     float inputPitchAcceleration = 0.0f;
     float inputRollAcceleration = 0.0f;
     float inputYawAcceleration = 0.0f;
 
-    if (input().keyDown[SDL_SCANCODE_W]) {
-      inputPitchAcceleration = -pitchAcceleration;
-    }
-    if (input().keyDown[SDL_SCANCODE_S]) {
-      inputPitchAcceleration = +pitchAcceleration;
-    }
-    if (input().keyDown[SDL_SCANCODE_D]) {
-      inputRollAcceleration = -rollAcceleration;
-    }
-    if (input().keyDown[SDL_SCANCODE_A]) {
-      inputRollAcceleration = +rollAcceleration;
-    }
-    if (input().keyDown[SDL_SCANCODE_E]) {
-      inputYawAcceleration = -yawAcceleration;
-    }
-    if (input().keyDown[SDL_SCANCODE_Q]) {
-      inputYawAcceleration = +yawAcceleration;
+    if (!stalling) {
+      if (input().keyDown[SDL_SCANCODE_W]) {
+        inputPitchAcceleration = -pitchAcceleration;
+      }
+      if (input().keyDown[SDL_SCANCODE_S]) {
+        inputPitchAcceleration = +pitchAcceleration;
+      }
+      if (input().keyDown[SDL_SCANCODE_D]) {
+        inputRollAcceleration = -rollAcceleration;
+      }
+      if (input().keyDown[SDL_SCANCODE_A]) {
+        inputRollAcceleration = +rollAcceleration;
+      }
+      if (input().keyDown[SDL_SCANCODE_E]) {
+        inputYawAcceleration = -yawAcceleration;
+      }
+      if (input().keyDown[SDL_SCANCODE_Q]) {
+        inputYawAcceleration = +yawAcceleration;
+      }
     }
 
     if (inputPitchAcceleration != 0.0f) {
       currentPitchSpeed += inputPitchAcceleration * time().dt;
     }
     else {
-      if (currentPitchSpeed > 0.0f) {
-        currentPitchSpeed = std::clamp(currentPitchSpeed - 1.0f * time().dt, 0.0f, currentPitchSpeed);
+      if (currentPitchSpeed > basePitchSpeed) {
+        currentPitchSpeed = std::clamp(currentPitchSpeed - 2.0f * time().dt, basePitchSpeed, currentPitchSpeed);
       }
       else {
-        currentPitchSpeed = std::clamp(currentPitchSpeed + 1.0f * time().dt, currentPitchSpeed, 0.0f);
+        currentPitchSpeed = std::clamp(currentPitchSpeed + 2.0f * time().dt, currentPitchSpeed, basePitchSpeed);
       }
     }
 
@@ -946,11 +1096,11 @@ public:
       currentRollSpeed += inputRollAcceleration * time().dt;
     }
     else {
-      if (currentRollSpeed > 0.0f) {
-        currentRollSpeed = std::clamp(currentRollSpeed - 4.0f * time().dt, 0.0f, currentRollSpeed);
+      if (currentRollSpeed > baseRollSpeed) {
+        currentRollSpeed = std::clamp(currentRollSpeed - 6.0f * time().dt, baseRollSpeed, currentRollSpeed);
       }
       else {
-        currentRollSpeed = std::clamp(currentRollSpeed + 4.0f * time().dt, currentRollSpeed, 0.0f);
+        currentRollSpeed = std::clamp(currentRollSpeed + 6.0f * time().dt, currentRollSpeed, baseRollSpeed);
       }
     }
 
@@ -958,11 +1108,11 @@ public:
       currentYawSpeed += inputYawAcceleration * time().dt;
     }
     else {
-      if (currentYawSpeed > 0.0f) {
-        currentYawSpeed = std::clamp(currentYawSpeed - 1.0f * time().dt, 0.0f, currentYawSpeed);
+      if (currentYawSpeed > baseYawSpeed) {
+        currentYawSpeed = std::clamp(currentYawSpeed - 0.4f * time().dt, baseYawSpeed, currentYawSpeed);
       }
       else {
-        currentYawSpeed = std::clamp(currentYawSpeed + 1.0f * time().dt, currentYawSpeed, 0.0f);
+        currentYawSpeed = std::clamp(currentYawSpeed + 0.4f * time().dt, currentYawSpeed, baseYawSpeed);
       }
     }
 
@@ -970,45 +1120,127 @@ public:
     currentRollSpeed = std::clamp(currentRollSpeed, -maxRollSpeed, maxRollSpeed);
     currentYawSpeed = std::clamp(currentYawSpeed, -maxYawSpeed, maxYawSpeed);
 
-    // todo: apply forces before applying transformations
-
     transform.rotateLocal(glm::vec3{ 1.0f, 0.0f, 0.0f }, currentPitchSpeed * time().dt);
     transform.rotateLocal(glm::vec3{ 0.0f, 0.0f, 1.0f }, currentRollSpeed * time().dt);
     transform.rotateLocal(glm::vec3{ 0.0f, 1.0f, 0.0f }, currentYawSpeed * time().dt);
 
-    // delayed velocity vector?
+    // nose direction
+    {
+      glm::vec3 forwardInViewSpace = glm::rotate(glm::inverse(scene().getMainCamera()->transform.rotation), forward);
+      const float aspectRatio = scene().getMainCamera()->aspectRatio;
+      const float fovy = scene().getMainCamera()->fov;
+      forwardInViewSpace.x /= (-forwardInViewSpace.z * aspectRatio * glm::sin(fovy * 0.5f));
+      forwardInViewSpace.y /= (-forwardInViewSpace.z * glm::sin(fovy * 0.5f));
+      glm::vec2 forwardHint{};
+      forwardHint.x = forwardInViewSpace.x;
+      forwardHint.y = forwardInViewSpace.y;
 
-    glm::vec3 forward = transform.forward();
-    glm::vec3 up = transform.up();
+      debug().drawScreenLine(glm::vec2{ -0.05f, 0.05f } + forwardHint, glm::vec2{ 0.0f, 0.0f } + forwardHint, { 0.0f, 0.7f, 0.0f });
+      debug().drawScreenLine(glm::vec2{ 0.0f, 0.0f } + forwardHint, glm::vec2{ 0.05f, 0.05f } + forwardHint, { 0.0f, 0.7f, 0.0f });
+    }
 
-    float thrust = 10.0f;
-    float drag = (0.2f + 0.25f * std::abs(glm::dot(up, glm::normalize(velocity)))) * l2Norm(velocity);
-    float weight = 5.0f;
-    float lift = 0.25f * l2Norm(velocity);
+    {
+      auto q = transform.rotation;
+      // (heading, pitch, bank)
+      // YXZ
+      float headingAngle = std::atan2(2.0f * (q[0] * q[2] + q[1] * q[3]), 1.0f - 2.0f * (q[1] * q[1] + q[2] * q[2]));
+      float pitchAngle = std::asin(2.0f * (q[2] * q[3] - q[0] * q[1]));
+      float rollAngle = std::atan2(2.0f * (q[1] * q[2] + q[0] * q[3]), 1.0f - 2.0f * (q[1] * q[1] + q[3] * q[3]));
 
-    glm::vec3 accel{};
-    velocity += (thrust * forward + lift * up - drag * glm::normalize(velocity) + weight * glm::vec3(0.0f, -1.0f, 0.0f)) * time().dt;
-    transform.position += velocity * time().dt;
+      // pitch ladder
+      for (int angle = -40; angle <= 40; angle += 10) {
+        glm::vec2 horizonHint{};
+        {
+          glm::vec3 horizonInViewSpace = glm::rotate(glm::inverse(scene().getMainCamera()->transform.rotation), glm::normalize(glm::vec3{ forward.x, glm::sin(glm::radians(float(angle))), forward.z }));
+          const float aspectRatio = scene().getMainCamera()->aspectRatio;
+          const float fovy = scene().getMainCamera()->fov;
+          horizonInViewSpace.x /= (-horizonInViewSpace.z * aspectRatio * glm::sin(fovy * 0.5f));
+          horizonInViewSpace.y /= (-horizonInViewSpace.z * glm::sin(fovy * 0.5f));
+          horizonHint.x = horizonInViewSpace.x;
+          horizonHint.y = horizonInViewSpace.y;
+        }
 
-    debug().drawLine(transform.position, transform.position + velocity, glm::vec3{ 1.0f, 1.0f, 1.0f });
-    debug().drawLine(transform.position, transform.position + 5.0f * glm::vec3{ 0.0f, 0.0f, -1.0f }, glm::vec3{ 0.0f, 1.0f, 0.0f });
-    char speed[256];
-    sprintf(speed, "%f", glm::length(velocity));
-    debug().drawScreenText({ -0.5f, 0.0f }, speed);
-    sprintf(speed, "%f", transform.position.y);
-    debug().drawScreenText({ +0.5f, 0.0f }, speed);
+        glm::vec2 jej{ forward.x, forward.z };
+        {
+          glm::mat2x2 m{};
+          m[0][0] = glm::cos(0.2f);
+          m[0][1] = -glm::sin(0.2f);
+          m[1][0] = glm::sin(0.2f);
+          m[1][1] = glm::cos(0.2f);
+          jej = m * jej;
+        }
+        glm::vec2 horizonShiftHint{};
+        {
+          glm::vec3 horizonShiftInViewSpace = glm::rotate(glm::inverse(scene().getMainCamera()->transform.rotation), glm::normalize(glm::vec3{ jej.x, glm::sin(glm::radians(float(angle))), jej.y }));
+          const float aspectRatio = scene().getMainCamera()->aspectRatio;
+          const float fovy = scene().getMainCamera()->fov;
+          horizonShiftInViewSpace.x /= (-horizonShiftInViewSpace.z * aspectRatio * glm::sin(fovy * 0.5f));
+          horizonShiftInViewSpace.y /= (-horizonShiftInViewSpace.z * glm::sin(fovy * 0.5f));
+          horizonShiftHint.x = horizonShiftInViewSpace.x;
+          horizonShiftHint.y = horizonShiftInViewSpace.y;
+        }
+
+        debug().drawScreenLine(horizonHint, horizonShiftHint, { 0.0f, 0.8f, 0.0f });
+        if (angle == 0) {
+          debug().drawScreenLine(horizonHint + glm::vec2{ 0.0, 0.01 }, horizonShiftHint, { 0.0f, 0.8f, 0.0f });
+          debug().drawScreenLine(horizonHint - glm::vec2{ 0.0, 0.01 }, horizonShiftHint, { 0.0f, 0.8f, 0.0f });
+        }
+      }
+
+      char buf[256];
+      sprintf(buf, "heading: %f", headingAngle / float(M_PI) * 180.0f);
+      debug().drawScreenText({ -1.0f, 0.7f }, buf);
+      sprintf(buf, "pitch: %f", pitchAngle / float(M_PI) * 180.0f);
+      debug().drawScreenText({ -1.0f, 0.9f }, buf);
+      sprintf(buf, "roll : %f", rollAngle / float(M_PI) * 180.0f);
+      debug().drawScreenText({ -1.0f, 0.8f }, buf);
+    }
+
+    // velocity vector hint
+    {
+      glm::vec3 velocityInViewSpace = glm::rotate(glm::inverse(scene().getMainCamera()->transform.rotation), velocity);
+      const float aspectRatio = scene().getMainCamera()->aspectRatio;
+      const float fovy = scene().getMainCamera()->fov;
+      velocityInViewSpace.x /= (-velocityInViewSpace.z * aspectRatio * glm::sin(fovy * 0.5f));
+      velocityInViewSpace.y /= (-velocityInViewSpace.z * glm::sin(fovy * 0.5f));
+      glm::vec2 velocityHint{};
+      velocityHint.x = velocityInViewSpace.x;
+      velocityHint.y = velocityInViewSpace.y;
+
+      debug().drawScreenLine(glm::vec2{ -0.05f, 0.0f } + velocityHint, glm::vec2{ +0.05f, 0.0f } + velocityHint, glm::vec3{ 0.0f, 1.0f, 0.0f });
+      debug().drawScreenLine(glm::vec2{ 0.0f, 0.0f } + velocityHint, glm::vec2{ 0.0f, 0.05f } + velocityHint, glm::vec3{ 0.0f, 1.0f, 0.0f });
+    }
+
+    char buf[256];
+    sprintf(buf, "%f", glm::length(velocity));
+    debug().drawScreenText({ -0.5f, 0.3f }, buf);
+    sprintf(buf, "%f", velocity.x);
+    debug().drawScreenText({ -0.5f, 0.2f }, buf);
+    sprintf(buf, "%f", velocity.y);
+    debug().drawScreenText({ -0.5f, 0.1f }, buf);
+    sprintf(buf, "%f", velocity.z);
+    debug().drawScreenText({ -0.5f, 0.0f }, buf);
+    sprintf(buf, "%f", transform.position.y);
+    debug().drawScreenText({ +0.5f, 0.3f }, buf);
   }
 
+  float minThrust = 100.0f;
+  float maxThrust = 1000.0f;
+  float baseThrust = 200.0f;
+  float currentThrust = 200.0f;
+  float velocityShiftRate = 4.0f;
   float minSpeed = 5.0f;
+  float maxSpeed = 25.0f;
   float maxPitchSpeed = 1.0f;
-  float maxRollSpeed = 2.0f;
+  float maxRollSpeed = 3.0f;
   float maxYawSpeed = 0.25f;
-  float pitchAcceleration = 1.0f;
+  float pitchAcceleration = 2.0f;
   float rollAcceleration = 3.0f;
   float yawAcceleration = 0.25f;
   float currentPitchSpeed = 0.0f;
   float currentRollSpeed = 0.0f;
   float currentYawSpeed = 0.0f;
+  float targetSpeed = 20.0f;
 
 private:
   glm::vec3 velocity{};
@@ -1202,10 +1434,10 @@ public:
     {
       auto mesh = m_resources.create<Mesh>(SID("land"));
       Vertex vertices[]{
-        Vertex{ { -1000.0f, 0.0f, -1000.0f }, { 0.0f, 1.0f, 0.0f } },
-        Vertex{ { 1000.0f, 0.0f, -1000.0f }, { 0.0f, 1.0f, 0.0f } },
-        Vertex{ { 1000.0f, 0.0f, 1000.0f }, { 0.0f, 1.0f, 0.0f } },
-        Vertex{ { -1000.0f, 0.0f, 1000.0f }, { 0.0f, 1.0f, 0.0f } },
+        Vertex{ { -10000.0f, 0.0f, -10000.0f }, { 0.0f, 1.0f, 0.0f } },
+        Vertex{ { 10000.0f, 0.0f, -10000.0f }, { 0.0f, 1.0f, 0.0f } },
+        Vertex{ { 10000.0f, 0.0f, 10000.0f }, { 0.0f, 1.0f, 0.0f } },
+        Vertex{ { -10000.0f, 0.0f, 10000.0f }, { 0.0f, 1.0f, 0.0f } },
       };
       uint32_t indices[]{ 0, 2, 1, 0, 3, 2 };
 
@@ -1286,6 +1518,78 @@ public:
     }
 
     {
+      auto shader = m_resources.create<Shader>(SID("default.land"));
+      Shader::Options options{};
+      options.vertexSource = "layout (location = 0) in vec3 inPosition;\n"
+                             "layout (location = 1) in vec3 inNormal;\n"
+                             "layout (location = 0) out vec3 position;\n"
+                             "layout (location = 1) out vec3 normal;\n"
+                             "layout (std140, binding = 2) uniform Material {\n"
+                             "  vec3 color;\n"
+                             "  vec3 ambient;\n"
+                             "} material;\n"
+                             "layout (std140, binding = 0) uniform ViewProjection { mat4 view; mat4 projection; };\n"
+                             "uniform mat4 model;"
+                             "void main() {\n"
+                             "  gl_Position = projection * view * model * vec4(inPosition, 1.0);\n"
+                             "  position = (model * vec4(inPosition, 1.0)).xyz;\n"
+                             "  normal = normalize(inNormal);\n"
+                             "}";
+      options.fragmentSource = "layout (location = 0) in vec3 position;\n"
+                               "layout (location = 1) in vec3 inNormal;\n"
+                               "layout (location = 0) out vec4 fragColor;\n"
+                               "struct Light { vec3 position; vec3 color; };\n"
+                               "layout (std140, binding = 1) uniform Lights {\n"
+                               "  vec3 positions[128];\n"
+                               "  vec3 colors[128];\n"
+                               "  int count;\n"
+                               "} lights;\n"
+                               "layout (std140, binding = 2) uniform Material {\n"
+                               "  vec3 color;\n"
+                               "  vec3 ambient;\n"
+                               "} material;\n"
+                               "uniform float time;"
+                               "void main() {\n"
+                               "  vec3 lightsColor = vec3(0.0,0.0,0.0);\n"
+                               "  vec3 normal = normalize(inNormal);\n"
+                               "  for (int i = 0; i < lights.count; i++) { lightsColor += lights.colors[i] * max(0.0, dot(normal, normalize(lights.positions[i] - position))); }"
+                               "  vec3 materialColor = material.color;\n"
+                               "  if ((int(0.05 * position.x) + int(0.05 * position.z)) % 2 == 0) materialColor *= 0.5;"
+                               "  fragColor = vec4(materialColor * (material.ambient + lightsColor), 1.0);\n"
+                               "}";
+      shader->initialize(options);
+    }
+
+    {
+      auto shader = m_resources.create<Shader>(SID("screenspace.sky"));
+      Shader::Options options{};
+      options.vertexSource = "layout (location = 0) out vec2 uv;\n"
+                             "void main() {\n"
+                             "  const vec2 verts[] = vec2[](vec2(-1.0, 1.0), vec2(1.0, 1.0), vec2(1.0, -1.0), vec2(-1.0, 1.0), vec2(1.0, -1.0), vec2(-1.0, -1.0));"
+                             "  gl_Position = vec4(verts[gl_VertexID], 0.0, 1.0);\n"
+                             "  uv = verts[gl_VertexID];\n"
+                             "}";
+      options.fragmentSource = "layout (location = 0) in vec2 uv;\n"
+                               "layout (location = 0) out vec4 fragColor;\n"
+                               "uniform vec3 cameraPosition;\n"
+                               "uniform vec3 cameraUp;\n"
+                               "uniform vec3 cameraForward;\n"
+                               "uniform vec3 cameraRight;\n"
+                               "uniform float aspectRatio;\n"
+                               "uniform float fov;\n"
+                               "vec3 skyColor(vec3 rayOrig, vec3 rayDir) {\n"
+                               "  if (rayDir.y < 0.0) return vec3(0.0, 0.0, 0.0);\n"
+                               "  return mix(vec3(0.9, 0.9, 0.9), vec3(0.1, 0.2, 0.5), sqrt(sqrt(rayDir.y)));"
+                               "}\n"
+                               "void main() {\n"
+                               "  vec3 rayOrig = cameraPosition;\n"
+                               "  vec3 rayDir = normalize(cameraForward + sin(0.5 * fov) * cameraUp * uv.y + cameraRight * uv.x * aspectRatio * sin(0.5 * fov));"
+                               "  fragColor = vec4(skyColor(rayOrig, rayDir), 1.0);"
+                               "}";
+      shader->initialize(options);
+    }
+
+    {
       auto shader = m_resources.create<Shader>(SID("debug.drawline"));
       Shader::Options options{};
       options.vertexSource = "layout (std140, binding = 0) uniform ViewProjection { mat4 view; mat4 projection; };\n"
@@ -1294,6 +1598,24 @@ public:
                              "layout (location = 0) out vec3 outColor;\n"
                              "void main() {\n"
                              "  gl_Position = projection * view * vec4(verts[gl_VertexID], 1.0);\n"
+                             "  outColor = color;\n"
+                             "}";
+      options.fragmentSource = "layout (location = 0) in vec3 color;\n"
+                               "layout (location = 0) out vec4 fragColor;\n"
+                               "void main() {\n"
+                               "  fragColor = vec4(color, 1.0);\n"
+                               "}";
+      shader->initialize(options);
+    }
+
+    {
+      auto shader = m_resources.create<Shader>(SID("debug.drawscreenline"));
+      Shader::Options options{};
+      options.vertexSource = "uniform vec2 verts[2];\n"
+                             "uniform vec3 color;\n"
+                             "layout (location = 0) out vec3 outColor;\n"
+                             "void main() {\n"
+                             "  gl_Position = vec4(verts[gl_VertexID], 0.0, 1.0);\n"
                              "  outColor = color;\n"
                              "}";
       options.fragmentSource = "layout (location = 0) in vec3 color;\n"
@@ -1330,8 +1652,8 @@ public:
 
     {
       auto material = m_resources.create<Material>(SID("default.land"));
-      material->initialize(m_resources.get<Shader>(SID("default")));
-      material->setValue("Material.color", glm::vec3{ 0.0f, 1.0f, 0.0f });
+      material->initialize(m_resources.get<Shader>(SID("default.land")));
+      material->setValue("Material.color", glm::vec3{ 0.4f, 0.2f, 0.1f });
     }
 
     {
@@ -1356,6 +1678,11 @@ public:
       auto material = m_resources.create<Material>(SID("su37.engine"));
       material->initialize(m_resources.get<Shader>(SID("default")));
       material->setValue("Material.color", glm::vec3{ 0.100000f, 0.100000f, 0.100000f });
+    }
+
+    {
+      auto material = m_resources.create<Material>(SID("sky"));
+      material->initialize(m_resources.get<Shader>(SID("screenspace.sky")));
     }
 
     {
@@ -1436,6 +1763,25 @@ public:
     m_scene.scriptContext.resources = &m_resources;
     m_scene.scriptContext.debug = &m_debug;
     SDL_GL_GetDrawableSize(m_window, &m_width, &m_height);
+
+    glClipControl(GL_LOWER_LEFT, GL_ZERO_TO_ONE);
+
+    GLuint color, depth, fbo;
+
+    glCreateTextures(GL_TEXTURE_2D, 1, &color);
+    glTextureStorage2D(color, 1, GL_SRGB8_ALPHA8, m_width, m_height);
+
+    glCreateTextures(GL_TEXTURE_2D, 1, &depth);
+    glTextureStorage2D(depth, 1, GL_DEPTH_COMPONENT32F, m_width, m_height);
+
+    glCreateFramebuffers(1, &fbo);
+    glNamedFramebufferTexture(fbo, GL_COLOR_ATTACHMENT0, color, 0);
+    glNamedFramebufferTexture(fbo, GL_DEPTH_ATTACHMENT, depth, 0);
+
+    GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+    if (status != GL_FRAMEBUFFER_COMPLETE) {
+      fprintf(stderr, "glCheckFramebufferStatus: %x\n", status);
+    }
 
     setUpResources();
     setUpScene();
@@ -1551,8 +1897,11 @@ public:
 
       // Render
 
-      glEnable(GL_DEPTH_TEST);
+      glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+      glClearDepthf(0.0f);
       glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+      glEnable(GL_DEPTH_TEST);
+      glDepthFunc(GL_GREATER);
 
       struct SceneUniformBufferLayout {
         struct {
@@ -1622,12 +1971,39 @@ public:
         }
       }
 
+      // screenspace effect, post-render, specific depth func
+      {
+        glDepthFunc(GL_EQUAL);
+        glBindVertexArray(vaoDebug);
+        const Material* material = m_resources.get<Material>(SID("sky"));
+        glBindProgramPipeline(material->shader->programPipeline);
+        material->shader->fragShader.setUniform(SID("cameraPosition"), m_scene.getMainCamera()->transform.position);
+        material->shader->fragShader.setUniform(SID("cameraForward"), m_scene.getMainCamera()->transform.forward());
+        material->shader->fragShader.setUniform(SID("cameraUp"), m_scene.getMainCamera()->transform.up());
+        material->shader->fragShader.setUniform(SID("cameraRight"), m_scene.getMainCamera()->transform.right());
+        material->shader->fragShader.setUniform(SID("aspectRatio"), m_scene.getMainCamera()->aspectRatio);
+        material->shader->fragShader.setUniform(SID("fov"), m_scene.getMainCamera()->fov);
+        glDrawArrays(GL_TRIANGLES, 0, 6);
+        glDepthFunc(GL_GREATER);
+      }
+
       glDisable(GL_DEPTH_TEST);
       {
         Shader* lineShader = m_resources.get<Shader>(SID("debug.drawline"));
         glBindVertexArray(vaoDebug);
         glBindProgramPipeline(lineShader->programPipeline);
         for (auto& command : m_debug.m_drawLineCommands) {
+          lineShader->vertShader.setUniformArray(SID("verts[0]"), 2, command.verts);
+          lineShader->vertShader.setUniform(SID("color"), command.color);
+          glDrawArrays(GL_LINES, 0, 2);
+        }
+      }
+
+      {
+        Shader* lineShader = m_resources.get<Shader>(SID("debug.drawscreenline"));
+        glBindVertexArray(vaoDebug);
+        glBindProgramPipeline(lineShader->programPipeline);
+        for (auto& command : m_debug.m_drawScreenLineCommands) {
           lineShader->vertShader.setUniformArray(SID("verts[0]"), 2, command.verts);
           lineShader->vertShader.setUniform(SID("color"), command.color);
           glDrawArrays(GL_LINES, 0, 2);
@@ -1666,6 +2042,18 @@ public:
       glBindProgramPipeline(0);
 
       m_debug.clear();
+
+      {
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0); // default FBO
+        glBlitFramebuffer(
+          0, 0, m_width, m_height,
+          0, 0, m_width, m_height,
+          GL_COLOR_BUFFER_BIT, GL_LINEAR);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+      }
 
       SDL_GL_SwapWindow(m_window);
       advanceToNextFrame();
