@@ -1051,7 +1051,8 @@ public:
     float baseRollSpeed = 0.0f;
     float baseYawSpeed = 0.0f;
     {
-      basePitchSpeed = 0.01f * upDot;
+      basePitchSpeed = 0.0025f * upDot;
+      baseYawSpeed = -0.001f * rightDot;
     }
 
     // rotation acceleration based on player input
@@ -1093,14 +1094,21 @@ public:
     }
 
     if (inputRollAcceleration != 0.0f) {
-      currentRollSpeed += inputRollAcceleration * time().dt;
+      float acceleration = inputRollAcceleration;
+      if (currentRollSpeed < baseRollSpeed && inputRollAcceleration > 0.0) {
+        acceleration = 8.0f;
+      }
+      if (currentRollSpeed > baseRollSpeed && inputRollAcceleration < 0.0) {
+        acceleration = -8.0f;
+      }
+      currentRollSpeed += acceleration * time().dt;
     }
     else {
       if (currentRollSpeed > baseRollSpeed) {
-        currentRollSpeed = std::clamp(currentRollSpeed - 6.0f * time().dt, baseRollSpeed, currentRollSpeed);
+        currentRollSpeed = std::clamp(currentRollSpeed - 8.0f * time().dt, baseRollSpeed, currentRollSpeed);
       }
       else {
-        currentRollSpeed = std::clamp(currentRollSpeed + 6.0f * time().dt, currentRollSpeed, baseRollSpeed);
+        currentRollSpeed = std::clamp(currentRollSpeed + 8.0f * time().dt, currentRollSpeed, baseRollSpeed);
       }
     }
 
@@ -1235,7 +1243,7 @@ public:
   float maxRollSpeed = 3.0f;
   float maxYawSpeed = 0.25f;
   float pitchAcceleration = 2.0f;
-  float rollAcceleration = 3.0f;
+  float rollAcceleration = 5.0f;
   float yawAcceleration = 0.25f;
   float currentPitchSpeed = 0.0f;
   float currentRollSpeed = 0.0f;
