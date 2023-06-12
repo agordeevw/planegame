@@ -1,4 +1,6 @@
 #pragma once
+#include <planegame/ScriptContext.h>
+
 #include <memory>
 #include <vector>
 
@@ -7,9 +9,13 @@ class Light;
 class MeshRenderer;
 class Object;
 class Script;
+class Component;
 
 class Scene {
 public:
+  Scene();
+  ~Scene();
+
   Object* makeObject();
   Object* findObjectWithTag(uint32_t tag);
 
@@ -19,7 +25,7 @@ public:
     if constexpr (std::is_base_of_v<Script, T>) {
       Script* baseScript = component.get();
       setScriptContext(baseScript);
-      scripts.pendingScripts.push_back(std::move(component));
+      scripts.pendingScripts.emplace_back(std::move(component));
     }
     else if constexpr (std::is_same_v<T, Camera>) {
       components.cameras.emplace_back(std::move(component));

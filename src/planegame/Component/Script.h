@@ -1,27 +1,12 @@
 #pragma once
 #include <planegame/Component/Component.h>
+#include <planegame/ScriptContext.h>
 #include <planegame/StringID.h>
 
 #include <glm/fwd.hpp>
 
 #include <unordered_map>
 #include <vector>
-
-class Scene;
-class Resources;
-class Debug;
-class Input;
-class Time;
-class Random;
-
-struct ScriptContext {
-  Scene* scene;
-  const Input* input;
-  const Time* time;
-  Random* random;
-  Resources* resources;
-  Debug* debug;
-};
 
 // invoke in constructor of derived scripts
 #define SCRIPT_REGISTER_PROPERTY(fieldName) registerProperty({ #fieldName, fieldName })
@@ -66,19 +51,19 @@ public:
   virtual void update() = 0;
 
 protected:
-  Scene& scene() { return *m_context.scene; }
-  const Input& input() { return *m_context.input; }
-  const Time& time() { return *m_context.time; }
-  Random& random() { return *m_context.random; }
-  Resources& resources() { return *m_context.resources; }
-  Debug& debug() { return *m_context.debug; }
+  Scene& scene() { return *m_context->scene; }
+  const Input& input() { return *m_context->input; }
+  const Time& time() { return *m_context->time; }
+  Random& random() { return *m_context->random; }
+  Resources& resources() { return *m_context->resources; }
+  Debug& debug() { return *m_context->debug; }
 
   void registerProperty(NamedProperty property);
 
 private:
   friend class Scene;
 
-  ScriptContext m_context;
+  ScriptContext* m_context = nullptr;
   std::vector<NamedProperty> m_properties;
   std::unordered_map<StringID, std::size_t, StringIDHasher> m_mapNameIDToPropertyIndex;
 };

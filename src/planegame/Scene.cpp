@@ -7,6 +7,10 @@
 
 #include <algorithm>
 
+Scene::Scene() {}
+
+Scene::~Scene() = default;
+
 Object* Scene::makeObject() {
   return objects.emplace_back(std::make_unique<Object>(*this)).get();
 }
@@ -61,5 +65,5 @@ void Scene::destroyObjects() {
 }
 
 void Scene::setScriptContext(Script* script) {
-  script->m_context = scriptContext;
+  script->m_context = &scriptContext;
 }

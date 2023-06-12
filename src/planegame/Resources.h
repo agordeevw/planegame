@@ -12,6 +12,9 @@ class Texture2D;
 
 class Resources {
 public:
+  Resources();
+  ~Resources();
+
   template <class T>
   class NamedResource {
   public:
