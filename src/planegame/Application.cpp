@@ -629,7 +629,7 @@ void Application::run() {
       sceneUBOLayout.matrices.view = m_scene.getMainCamera()->viewMatrix4();
       sceneUBOLayout.matrices.projection = m_scene.getMainCamera()->projectionMatrix4();
       uint32_t lightId = 0;
-      for (auto& light : m_scene.components.lights) {
+      for (auto& light : m_scene.components.get<Light>()) {
         sceneUBOLayout.lights.positions[lightId].v = light->transform.worldPosition();
         sceneUBOLayout.lights.colors[lightId].v = light->color;
         lightId++;
@@ -644,7 +644,7 @@ void Application::run() {
     std::unordered_map<const Material*, uint32_t> offsetForMaterial;
     uboMaterialAllocator.clear();
     {
-      for (auto& meshRenderer : m_scene.components.meshRenderers) {
+      for (auto& meshRenderer : m_scene.components.get<MeshRenderer>()) {
         for (std::size_t i = 0; i < meshRenderer->mesh->submeshes.size(); i++) {
           const Material* material = meshRenderer->materials[i];
           if (offsetForMaterial.find(material) == offsetForMaterial.end()) {
@@ -658,7 +658,7 @@ void Application::run() {
       glNamedBufferSubData(uboMaterial[currentFrame], 0, uboMaterialAllocator.allocatedSize(), uboMaterialAllocator.data());
     }
 
-    for (auto& meshRenderer : m_scene.components.meshRenderers) {
+    for (auto& meshRenderer : m_scene.components.get<MeshRenderer>()) {
       glBindVertexArray(meshRenderer->mesh->gl.vao);
       for (std::size_t i = 0; i < meshRenderer->mesh->submeshes.size(); i++) {
         Mesh::SubMesh& submesh = meshRenderer->mesh->submeshes[i];

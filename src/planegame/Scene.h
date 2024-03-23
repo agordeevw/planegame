@@ -1,12 +1,10 @@
 #pragma once
+#include <planegame/Components.h>
 #include <planegame/ScriptContext.h>
 
 #include <memory>
 #include <vector>
 
-class Camera;
-class Light;
-class MeshRenderer;
 class Object;
 class Script;
 class Component;
@@ -27,17 +25,8 @@ public:
       setScriptContext(baseScript);
       scripts.pendingScripts.emplace_back(std::move(component));
     }
-    else if constexpr (std::is_same_v<T, Camera>) {
-      components.cameras.emplace_back(std::move(component));
-    }
-    else if constexpr (std::is_same_v<T, MeshRenderer>) {
-      components.meshRenderers.emplace_back(std::move(component));
-    }
-    else if constexpr (std::is_same_v<T, Light>) {
-      components.lights.emplace_back(std::move(component));
-    }
     else {
-      static_assert(false, "component type not handled");
+      components.get<T>().emplace_back(std::move(component));
     }
   }
 
@@ -53,11 +42,7 @@ private:
   void setScriptContext(Script* script);
 
   std::vector<std::unique_ptr<Object>> objects;
-  struct Components {
-    std::vector<std::unique_ptr<Camera>> cameras;
-    std::vector<std::unique_ptr<Light>> lights;
-    std::vector<std::unique_ptr<MeshRenderer>> meshRenderers;
-  } components;
+  Components components;
   struct Scripts {
     std::vector<std::unique_ptr<Script>> activeScripts;
     std::vector<std::unique_ptr<Script>> pendingScripts;

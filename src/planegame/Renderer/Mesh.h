@@ -1,4 +1,6 @@
 #pragma once
+#include <planegame/StringID.h>
+
 #include <cstdint>
 #include <vector>
 

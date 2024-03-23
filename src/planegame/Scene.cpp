@@ -24,7 +24,7 @@ Object* Scene::findObjectWithTag(uint32_t tag) {
 }
 
 Camera* Scene::getMainCamera() {
-  for (auto& camera : components.cameras) {
+  for (auto& camera : components.get<Camera>()) {
     if (camera->isMain)
       return camera.get();
   }
@@ -56,9 +56,9 @@ void Scene::destroyObjects() {
     v.erase(std::remove_if(v.begin(), v.end(), [](const auto& ptr) { return ptr.get() == nullptr; }), v.end());
   };
 
-  deleteTagged(components.cameras);
-  deleteTagged(components.lights);
-  deleteTagged(components.meshRenderers);
+  deleteTagged(components.get<Camera>());
+  deleteTagged(components.get<Light>());
+  deleteTagged(components.get<MeshRenderer>());
   deleteTagged(scripts.activeScripts);
 
   deleteTagged(objects);
