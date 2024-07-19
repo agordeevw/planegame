@@ -17,7 +17,8 @@ target_link_libraries(${PROJECT_NAME}
 target_include_directories(${PROJECT_NAME}
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}
-        ${CMAKE_CURRENT_SOURCE_DIR}/planegame/Renderer)
+        ${CMAKE_CURRENT_SOURCE_DIR}/planegame/Renderer
+        ${CMAKE_SOURCE_DIR}/external/nlohmann/include)
 
 source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${PROJECT_SOURCES})
 

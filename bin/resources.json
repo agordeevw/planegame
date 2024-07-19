@@ -1,0 +1,12 @@
+{
+  "texture2d": {
+    "debug.font": {
+      "path": "resources/debug.font.png"
+    }
+  },
+  "mesh": {
+    "su37": {
+      "path": "resources/su37.meshresource"
+    }
+  }
+}

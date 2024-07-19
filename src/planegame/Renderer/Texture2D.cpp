@@ -7,7 +7,7 @@
 #include <vector>
 
 void Texture2D::initialize(const Options& options) {
-  SDL_Surface* surf = IMG_Load(options.path);
+  SDL_Surface* surf = IMG_Load(options.path.c_str());
   GLenum glformat = GL_RGB;
   switch (surf->format->BytesPerPixel) {
     case 1:

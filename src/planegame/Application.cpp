@@ -17,6 +17,10 @@
 #include <SDL.h>
 #include <SDL_image.h>
 #include <glad/glad.h>
+#include <nlohmann/json.hpp>
+
+#include <fstream>
+#include <iostream>
 
 struct Vertex {
   glm::vec3 position;
@@ -81,7 +85,7 @@ void Application::importMesh(const char* filename, StringID sid) {
   std::vector<uint32_t> indices;
   std::vector<uint32_t> submeshes;
   {
-    FILE* file = fopen("su37.meshresource", "rb");
+    FILE* file = fopen(filename, "rb");
     if (!file)
       throw std::runtime_error("file not found");
 
@@ -130,7 +134,34 @@ void Application::importMesh(const char* filename, StringID sid) {
 }
 
 void Application::setUpResources() {
-  importMesh("su37.meshresource", SID("su37"));
+  nlohmann::json jResources;
+  try {
+    std::ifstream is("./resources.json");
+    jResources = nlohmann::json::parse(is);
+  }
+  catch (const nlohmann::json::parse_error& e) {
+    std::cerr << e.what() << std::endl;
+    throw e;
+  }
+
+  if (jResources.contains("texture2d")) {
+    nlohmann::json jTexture2ds = jResources.at("texture2d");
+    for (nlohmann::json::iterator it = jTexture2ds.begin(); it != jTexture2ds.end(); ++it) {
+      Texture2D::Options options;
+      options.path = it.value().at("path").get<std::string>();
+      options.magFilter = GL_NEAREST;
+      options.minFilter = GL_NEAREST;
+      auto texture = m_resources.create<Texture2D>(makeSID(it.key().c_str()));
+      texture->initialize(options);
+    }
+  }
+
+  if (jResources.contains("mesh")) {
+    nlohmann::json jMeshes = jResources.at("mesh");
+    for (nlohmann::json::iterator it = jMeshes.begin(); it != jMeshes.end(); ++it) {
+      importMesh(it.value().at("path").get<std::string>().c_str(), makeSID(it.key().c_str()));
+    }
+  }
 
   {
     auto mesh = m_resources.create<Mesh>(SID("land"));
@@ -384,15 +415,6 @@ void Application::setUpResources() {
   {
     auto material = m_resources.create<Material>(SID("sky"));
     material->initialize(m_resources.get<Shader>(SID("screenspace.sky")));
-  }
-
-  {
-    Texture2D::Options options;
-    options.path = "./debug.font.png";
-    options.magFilter = GL_NEAREST;
-    options.minFilter = GL_NEAREST;
-    auto texture = m_resources.create<Texture2D>(SID("debug.font"));
-    texture->initialize(options);
   }
 }
 

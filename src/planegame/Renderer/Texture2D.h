@@ -2,11 +2,12 @@
 #include <glad/glad.h>
 
 #include <cstdint>
+#include <string>
 
 class Texture2D {
 public:
   struct Options {
-    const char* path = nullptr;
+    std::string path;
     GLuint minFilter = GL_LINEAR_MIPMAP_LINEAR;
     GLuint magFilter = GL_LINEAR;
   };
