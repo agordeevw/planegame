@@ -7,6 +7,32 @@
   "mesh": {
     "su37": {
       "path": "resources/su37.meshresource"
+    },
+    "land": {
+      "path": "resources/land.meshresource"
+    },
+    "object": {
+      "path": "resources/object.meshresource"
+    }
+  },
+  "shader": {
+    "default": {
+      "path": "resources/default.shader"
+    },
+    "default.land": {
+      "path": "resources/default.land.shader"
+    },
+    "screenspace.sky": {
+      "path": "resources/screenspace.sky.shader"
+    },
+    "debug.drawline": {
+      "path": "resources/debug.drawline.shader"
+    },
+    "debug.drawscreenline": {
+      "path": "resources/debug.drawscreenline.shader"
+    },
+    "debug.drawscreentext": {
+      "path": "resources/debug.drawscreentext.shader"
     }
   }
 }

@@ -12,12 +12,14 @@ const ShaderProgram::UniformBlock::Entry* ShaderProgram::UniformBlock::getEntry(
 
 bool ShaderProgram::initialize(const Options& options) {
   const char* vertexShaderPrefix = "#version 460\n"
+                                   "#define VERTEX_SHADER\n"
                                    "out gl_PerVertex {\n"
                                    "  vec4 gl_Position;\n"
                                    "  float gl_PointSize;\n"
                                    "  float gl_ClipDistance[];\n"
                                    "};\n";
-  const char* fragmentShaderPrefix = "#version 460\n";
+  const char* fragmentShaderPrefix = "#version 460\n"
+                                     "#define FRAGMENT_SHADER\n";
   if (options.type == GL_VERTEX_SHADER) {
     const char* sources[2] = { vertexShaderPrefix, options.source };
     program = glCreateShaderProgramv(options.type, 2, sources);

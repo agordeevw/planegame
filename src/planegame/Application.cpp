@@ -21,6 +21,7 @@
 
 #include <fstream>
 #include <iostream>
+#include <sstream>
 
 struct Vertex {
   glm::vec3 position;
@@ -163,223 +164,23 @@ void Application::setUpResources() {
     }
   }
 
-  {
-    auto mesh = m_resources.create<Mesh>(SID("land"));
-    Vertex vertices[]{
-      Vertex{ { -10000.0f, 0.0f, -10000.0f }, { 0.0f, 1.0f, 0.0f } },
-      Vertex{ { 10000.0f, 0.0f, -10000.0f }, { 0.0f, 1.0f, 0.0f } },
-      Vertex{ { 10000.0f, 0.0f, 10000.0f }, { 0.0f, 1.0f, 0.0f } },
-      Vertex{ { -10000.0f, 0.0f, 10000.0f }, { 0.0f, 1.0f, 0.0f } },
-    };
-    uint32_t indices[]{ 0, 2, 1, 0, 3, 2 };
+  if (jResources.contains("shader")) {
+    nlohmann::json jShaders = jResources.at("shader");
+    for (nlohmann::json::iterator it = jShaders.begin(); it != jShaders.end(); ++it) {
+      std::string source;
+      {
+        std::string path = it.value().at("path").get<std::string>();
+        std::ifstream is(path);
+        std::stringstream ss;
+        ss << is.rdbuf();
+        source = ss.str();
+      }
 
-    Mesh::Options options;
-    options.attributes = {
-      Mesh::VertexAttribute(Mesh::VertexAttribute::Format::f32, 3),
-      Mesh::VertexAttribute(Mesh::VertexAttribute::Format::f32, 3)
-    };
-    options.indexBufferData = indices;
-    options.indexCount = 6;
-    options.indexFormat = Mesh::IndexFormat::u32;
-    options.vertexBufferData = vertices;
-    options.vertexCount = 4;
-    mesh->initialize(options);
-  }
-
-  {
-    auto mesh = m_resources.create<Mesh>(SID("object"));
-    Vertex vertices[]{
-      Vertex{ { -1.0, -1.0, 0.0 }, { 1.0, 0.0, 0.0 } },
-      Vertex{ { 1.0, -1.0, 0.0 }, { 0.0, 1.0, 0.0 } },
-      Vertex{ { 0.0, 1.0, 0.0 }, { 0.0, 0.0, 1.0 } }
-    };
-    uint32_t indices[]{ 0, 1, 2 };
-
-    Mesh::Options options;
-    options.attributes = {
-      Mesh::VertexAttribute(Mesh::VertexAttribute::Format::f32, 3),
-      Mesh::VertexAttribute(Mesh::VertexAttribute::Format::f32, 3)
-    };
-    options.indexBufferData = indices;
-    options.indexCount = 3;
-    options.indexFormat = Mesh::IndexFormat::u32;
-    options.vertexBufferData = vertices;
-    options.vertexCount = 3;
-    mesh->initialize(options);
-  }
-
-  {
-    auto shader = m_resources.create<Shader>(SID("default"));
-    Shader::Options options{};
-    options.vertexSource = "layout (location = 0) in vec3 inPosition;\n"
-                           "layout (location = 1) in vec3 inNormal;\n"
-                           "layout (location = 0) out vec3 position;\n"
-                           "layout (location = 1) out vec3 normal;\n"
-                           "layout (std140, binding = 2) uniform Material {\n"
-                           "  vec3 color;\n"
-                           "  vec3 ambient;\n"
-                           "} material;\n"
-                           "layout (std140, binding = 0) uniform ViewProjection { mat4 view; mat4 projection; };\n"
-                           "uniform mat4 model;"
-                           "void main() {\n"
-                           "  gl_Position = projection * view * model * vec4(inPosition, 1.0);\n"
-                           "  position = (model * vec4(inPosition, 1.0)).xyz;\n"
-                           "  normal = normalize(inNormal);\n"
-                           "}";
-    options.fragmentSource = "layout (location = 0) in vec3 position;\n"
-                             "layout (location = 1) in vec3 inNormal;\n"
-                             "layout (location = 0) out vec4 fragColor;\n"
-                             "struct Light { vec3 position; vec3 color; };\n"
-                             "layout (std140, binding = 1) uniform Lights {\n"
-                             "  vec3 positions[128];\n"
-                             "  vec3 colors[128];\n"
-                             "  int count;\n"
-                             "} lights;\n"
-                             "layout (std140, binding = 2) uniform Material {\n"
-                             "  vec3 color;\n"
-                             "  vec3 ambient;\n"
-                             "} material;\n"
-                             "uniform float time;"
-                             "void main() {\n"
-                             "  vec3 lightsColor = vec3(0.0,0.0,0.0);\n"
-                             "  vec3 normal = normalize(inNormal);\n"
-                             "  for (int i = 0; i < lights.count; i++) { lightsColor += lights.colors[i] * max(0.0, dot(normal, normalize(lights.positions[i] - position))); }"
-                             "  fragColor = vec4(material.color * (material.ambient + lightsColor), 1.0);\n"
-                             "}";
-    shader->initialize(options);
-  }
-
-  {
-    auto shader = m_resources.create<Shader>(SID("default.land"));
-    Shader::Options options{};
-    options.vertexSource = "layout (location = 0) in vec3 inPosition;\n"
-                           "layout (location = 1) in vec3 inNormal;\n"
-                           "layout (location = 0) out vec3 position;\n"
-                           "layout (location = 1) out vec3 normal;\n"
-                           "layout (std140, binding = 2) uniform Material {\n"
-                           "  vec3 color;\n"
-                           "  vec3 ambient;\n"
-                           "} material;\n"
-                           "layout (std140, binding = 0) uniform ViewProjection { mat4 view; mat4 projection; };\n"
-                           "uniform mat4 model;"
-                           "void main() {\n"
-                           "  gl_Position = projection * view * model * vec4(inPosition, 1.0);\n"
-                           "  position = (model * vec4(inPosition, 1.0)).xyz;\n"
-                           "  normal = normalize(inNormal);\n"
-                           "}";
-    options.fragmentSource = "layout (location = 0) in vec3 position;\n"
-                             "layout (location = 1) in vec3 inNormal;\n"
-                             "layout (location = 0) out vec4 fragColor;\n"
-                             "struct Light { vec3 position; vec3 color; };\n"
-                             "layout (std140, binding = 1) uniform Lights {\n"
-                             "  vec3 positions[128];\n"
-                             "  vec3 colors[128];\n"
-                             "  int count;\n"
-                             "} lights;\n"
-                             "layout (std140, binding = 2) uniform Material {\n"
-                             "  vec3 color;\n"
-                             "  vec3 ambient;\n"
-                             "} material;\n"
-                             "uniform float time;"
-                             "void main() {\n"
-                             "  vec3 lightsColor = vec3(0.0,0.0,0.0);\n"
-                             "  vec3 normal = normalize(inNormal);\n"
-                             "  for (int i = 0; i < lights.count; i++) { lightsColor += lights.colors[i] * max(0.0, dot(normal, normalize(lights.positions[i] - position))); }"
-                             "  vec3 materialColor = material.color;\n"
-                             "  if ((int(0.05 * position.x) + int(0.05 * position.z)) % 2 == 0) materialColor *= 0.5;"
-                             "  fragColor = vec4(materialColor * (material.ambient + lightsColor), 1.0);\n"
-                             "}";
-    shader->initialize(options);
-  }
-
-  {
-    auto shader = m_resources.create<Shader>(SID("screenspace.sky"));
-    Shader::Options options{};
-    options.vertexSource = "layout (location = 0) out vec2 uv;\n"
-                           "void main() {\n"
-                           "  const vec2 verts[] = vec2[](vec2(-1.0, 1.0), vec2(1.0, 1.0), vec2(1.0, -1.0), vec2(-1.0, 1.0), vec2(1.0, -1.0), vec2(-1.0, -1.0));"
-                           "  gl_Position = vec4(verts[gl_VertexID], 0.0, 1.0);\n"
-                           "  uv = verts[gl_VertexID];\n"
-                           "}";
-    options.fragmentSource = "layout (location = 0) in vec2 uv;\n"
-                             "layout (location = 0) out vec4 fragColor;\n"
-                             "uniform vec3 cameraPosition;\n"
-                             "uniform vec3 cameraUp;\n"
-                             "uniform vec3 cameraForward;\n"
-                             "uniform vec3 cameraRight;\n"
-                             "uniform float aspectRatio;\n"
-                             "uniform float fov;\n"
-                             "vec3 skyColor(vec3 rayOrig, vec3 rayDir) {\n"
-                             "  if (rayDir.y < 0.0) return vec3(0.0, 0.0, 0.0);\n"
-                             "  return mix(vec3(0.9, 0.9, 0.9), vec3(0.1, 0.2, 0.5), sqrt(sqrt(rayDir.y)));"
-                             "}\n"
-                             "void main() {\n"
-                             "  vec3 rayOrig = cameraPosition;\n"
-                             "  vec3 rayDir = normalize(cameraForward + sin(0.5 * fov) * cameraUp * uv.y + cameraRight * uv.x * aspectRatio * sin(0.5 * fov));"
-                             "  fragColor = vec4(skyColor(rayOrig, rayDir), 1.0);"
-                             "}";
-    shader->initialize(options);
-  }
-
-  {
-    auto shader = m_resources.create<Shader>(SID("debug.drawline"));
-    Shader::Options options{};
-    options.vertexSource = "layout (std140, binding = 0) uniform ViewProjection { mat4 view; mat4 projection; };\n"
-                           "uniform vec3 verts[2];\n"
-                           "uniform vec3 color;\n"
-                           "layout (location = 0) out vec3 outColor;\n"
-                           "void main() {\n"
-                           "  gl_Position = projection * view * vec4(verts[gl_VertexID], 1.0);\n"
-                           "  outColor = color;\n"
-                           "}";
-    options.fragmentSource = "layout (location = 0) in vec3 color;\n"
-                             "layout (location = 0) out vec4 fragColor;\n"
-                             "void main() {\n"
-                             "  fragColor = vec4(color, 1.0);\n"
-                             "}";
-    shader->initialize(options);
-  }
-
-  {
-    auto shader = m_resources.create<Shader>(SID("debug.drawscreenline"));
-    Shader::Options options{};
-    options.vertexSource = "uniform vec2 verts[2];\n"
-                           "uniform vec3 color;\n"
-                           "layout (location = 0) out vec3 outColor;\n"
-                           "void main() {\n"
-                           "  gl_Position = vec4(verts[gl_VertexID], 0.0, 1.0);\n"
-                           "  outColor = color;\n"
-                           "}";
-    options.fragmentSource = "layout (location = 0) in vec3 color;\n"
-                             "layout (location = 0) out vec4 fragColor;\n"
-                             "void main() {\n"
-                             "  fragColor = vec4(color, 1.0);\n"
-                             "}";
-    shader->initialize(options);
-  }
-
-  {
-    auto shader = m_resources.create<Shader>(SID("debug.drawscreentext"));
-    Shader::Options options{};
-    options.vertexSource = "layout (location = 0) out vec2 outUV;\n"
-                           "uniform vec2 screenPosition;\n"
-                           "uniform vec2 screenCharSize;\n"
-                           "uniform vec2 charBottomLeft;\n"
-                           "uniform vec2 charSize;\n"
-                           "void main() {\n"
-                           "  const vec2 verts[6] = vec2[](vec2(0.0, 0.0), vec2(1.0, 0.0), vec2(1.0, 1.0), vec2(0.0, 0.0), vec2(1.0, 1.0), vec2(0.0, 1.0));\n"
-                           "  gl_Position = vec4(screenPosition + screenCharSize * verts[gl_VertexID], 0.0, 1.0);\n"
-                           "  outUV = charBottomLeft + charSize * verts[gl_VertexID];\n"
-                           "}";
-    options.fragmentSource = "layout (location = 0) in vec2 uv;\n"
-                             "layout (location = 0) out vec4 fragColor;\n"
-                             "layout (binding = 0) uniform sampler2D textureFont;\n"
-                             "void main() {\n"
-                             "  vec3 color = texture(textureFont, uv).xyz;"
-                             "  if (color.y < 0.5) discard;\n"
-                             "  fragColor = vec4(texture(textureFont, uv).xyz, 1.0);\n"
-                             "}";
-    shader->initialize(options);
+      auto shader = m_resources.create<Shader>(makeSID(it.key().c_str()));
+      Shader::Options options{};
+      options.source = source.c_str();
+      shader->initialize(options);
+    }
   }
 
   {
@@ -430,8 +231,8 @@ void Application::setUpScene() {
 
   Object* lights[2];
   lights[0] = m_scene.makeObject();
-  lights[0]->transform.position = { 0.0, 5.0f, 0.0f };
-  lights[0]->addComponent<Light>()->color = { 5.0f, 5.0f, 5.0f };
+  lights[0]->transform.position = { 0.0, 30.0f, 0.0f };
+  lights[0]->addComponent<Light>()->color = { 10.0f, 10.0f, 10.0f };
   lights[1] = m_scene.makeObject();
   lights[1]->transform.position = { 2.0, 2.0f, 0.0f };
   lights[1]->addComponent<Light>()->color = { 3.0f, 0.0f, 0.0f };
@@ -439,7 +240,7 @@ void Application::setUpScene() {
   Object* plane = m_scene.makeObject();
   {
     plane->tag = 0;
-    plane->transform.position = { 0.0f, 10.0f, 0.0f };
+    plane->transform.position = { 0.0f, 50.0f, 0.0f };
     MeshRenderer* meshRenderer = plane->addComponent<MeshRenderer>();
     meshRenderer->mesh = m_resources.get<Mesh>(SID("su37"));
     meshRenderer->materials.push_back(m_resources.get<Material>(SID("su37.body")));

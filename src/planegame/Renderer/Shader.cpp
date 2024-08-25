@@ -2,13 +2,13 @@
 
 void Shader::initialize(const Options& options) {
   ShaderProgram::Options vertOptions;
-  vertOptions.source = options.vertexSource;
+  vertOptions.source = options.source;
   vertOptions.type = GL_VERTEX_SHADER;
   if (!vertShader.initialize(vertOptions))
     throw std::runtime_error("shader failure");
 
   ShaderProgram::Options fragOptions;
-  fragOptions.source = options.fragmentSource;
+  fragOptions.source = options.source;
   fragOptions.type = GL_FRAGMENT_SHADER;
   if (!fragShader.initialize(fragOptions))
     throw std::runtime_error("shader failure");

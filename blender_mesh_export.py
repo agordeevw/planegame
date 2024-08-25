@@ -4,7 +4,6 @@ from ctypes import *
 
 def writeMeshResource(context, filepath, use_some_setting):
     print("running writeMeshResource...")
-    f = open(filepath, 'wb')
     object = bpy.context.selected_objects[0]
     depsgraph = bpy.context.evaluated_depsgraph_get()
     object = object.evaluated_get(depsgraph)
@@ -17,6 +16,8 @@ def writeMeshResource(context, filepath, use_some_setting):
     # model up is Z
     # model forward is Y
     # model right is X
+    
+    f = open(filepath, 'wb')
     
     # write vertices
     vertices = mesh.vertices

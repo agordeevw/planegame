@@ -1,11 +1,12 @@
 #pragma once
 #include <planegame/Renderer/ShaderProgram.h>
 
+#include <string>
+
 class Shader {
 public:
   struct Options {
-    const char* vertexSource = nullptr;
-    const char* fragmentSource = nullptr;
+    const char* source = nullptr;
   };
 
   void initialize(const Options& options);
