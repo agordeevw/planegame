@@ -23,7 +23,9 @@ layout (location = 0) out vec4 fragColor;
 struct Light { vec3 position; vec3 color; };
 layout (std140, binding = 1) uniform Lights {
   vec3 positions[128];
+  vec3 directions[128];
   vec3 colors[128];
+  int types[128];
   int count;
 } lights;
 layout (std140, binding = 2) uniform Material {
@@ -34,7 +36,12 @@ uniform float time;
 void main() {
   vec3 lightsColor = vec3(0.0,0.0,0.0);
   vec3 normal = normalize(inNormal);
-  for (int i = 0; i < lights.count; i++) { lightsColor += lights.colors[i] * max(0.0, dot(normal, normalize(lights.positions[i] - position))); }
+  for (int i = 0; i < lights.count; i++) {
+      if (lights.types[i] == 0) // POINT
+        lightsColor += lights.colors[i] * max(0.0, dot(normal, normalize(lights.positions[i] - position)));
+      else if (lights.types[i] == 1) // DIRECTIONAL
+        lightsColor += lights.colors[i] * max(0.0, dot(normal, normalize(-lights.directions[i])));
+  }
   vec3 materialColor = material.color;
   if ((int(0.05 * position.x) + int(0.05 * position.z)) % 2 == 0) materialColor *= 0.5;
   fragColor = vec4(materialColor * (material.ambient + lightsColor), 1.0);

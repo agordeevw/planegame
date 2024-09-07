@@ -48,6 +48,7 @@ int Application::setUp() {
   SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
   SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 4);
   SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 6);
+  SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, SDL_GL_CONTEXT_DEBUG_FLAG);
   m_context = SDL_GL_CreateContext(m_window);
   if (!m_context)
     return 1;
@@ -231,11 +232,15 @@ void Application::setUpScene() {
 
   Object* lights[2];
   lights[0] = m_scene.makeObject();
-  lights[0]->transform.position = { 0.0, 30.0f, 0.0f };
-  lights[0]->addComponent<Light>()->color = { 10.0f, 10.0f, 10.0f };
+  lights[0]->transform.rotation = glm::quatLookAt(glm::vec3{ -1.0, -1.0, -1.0 }, glm::vec3{ 0.0, 1.0, 0.0 });
+  Light* light0 = lights[0]->addComponent<Light>();
+  light0->color = { 2.0f, 2.0f, 2.0f };
+  light0->type = LightType::DIRECTIONAL;
   lights[1] = m_scene.makeObject();
   lights[1]->transform.position = { 2.0, 2.0f, 0.0f };
-  lights[1]->addComponent<Light>()->color = { 3.0f, 0.0f, 0.0f };
+  Light* light1 = lights[1]->addComponent<Light>();
+  light1->color = { 3.0, 0.0, 0.0 };
+  light1->type = LightType::POINT;
 
   Object* plane = m_scene.makeObject();
   {
@@ -313,6 +318,8 @@ void Application::run() {
   GLint ubOffsetAlignment;
   glGetIntegerv(GL_UNIFORM_BUFFER_OFFSET_ALIGNMENT, &ubOffsetAlignment);
 
+  const std::size_t UNIFORM_BUFFER_SIZE = 64 * 1024;
+
   struct MaterialUniformBufferStackAllocator {
   public:
     MaterialUniformBufferStackAllocator(uint32_t size, uint32_t alignment) : alignment(alignment), backingStorage(size) {}
@@ -344,7 +351,7 @@ void Application::run() {
     std::vector<char> backingStorage;
     uint32_t nextAllocationStart = 0;
     uint32_t m_allocatedSize = 0;
-  } uboMaterialAllocator(64 * 1024, ubOffsetAlignment);
+  } uboMaterialAllocator(UNIFORM_BUFFER_SIZE, ubOffsetAlignment);
 
   const uint32_t MAX_FRAMES_IN_FLIGHT = 2;
   const uint32_t FRAME_0 = 0;
@@ -354,8 +361,8 @@ void Application::run() {
   GLuint uboMaterial[MAX_FRAMES_IN_FLIGHT];
   for (uint32_t frameIdx = 0; frameIdx < MAX_FRAMES_IN_FLIGHT; frameIdx++) {
     glCreateBuffers(2, uniformBuffers[frameIdx]);
-    glNamedBufferData(uniformBuffers[frameIdx][0], 64 * 1024, nullptr, GL_DYNAMIC_DRAW);
-    glNamedBufferData(uniformBuffers[frameIdx][1], 64 * 1024, nullptr, GL_DYNAMIC_DRAW);
+    glNamedBufferData(uniformBuffers[frameIdx][0], UNIFORM_BUFFER_SIZE, nullptr, GL_DYNAMIC_DRAW);
+    glNamedBufferData(uniformBuffers[frameIdx][1], UNIFORM_BUFFER_SIZE, nullptr, GL_DYNAMIC_DRAW);
     uboScene[frameIdx] = uniformBuffers[frameIdx][0];
     uboMaterial[frameIdx] = uniformBuffers[frameIdx][1];
   }
@@ -441,11 +448,20 @@ void Application::run() {
         struct {
           glm::vec3 v;
           char pad[4];
+        } directions[128];
+        struct {
+          glm::vec3 v;
+          char pad[4];
         } colors[128];
+        struct {
+          int v;
+          char pad[12];
+        } types[128];
         int32_t count;
         char pad[12];
       } lights;
     } sceneUBOLayout;
+    static_assert(sizeof(SceneUniformBufferLayout) <= UNIFORM_BUFFER_SIZE);
 
     // Set up scene uniform
     {
@@ -454,7 +470,9 @@ void Application::run() {
       uint32_t lightId = 0;
       for (auto& light : m_scene.components.get<Light>()) {
         sceneUBOLayout.lights.positions[lightId].v = light->transform.worldPosition();
+        sceneUBOLayout.lights.directions[lightId].v = light->transform.forward();
         sceneUBOLayout.lights.colors[lightId].v = light->color;
+        sceneUBOLayout.lights.types[lightId].v = int(light->type);
         lightId++;
       }
       sceneUBOLayout.lights.count = lightId;
