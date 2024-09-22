@@ -56,8 +56,8 @@ public:
 
   // todo: this one should read things from scene description file
   void setUpScene() override {
-    Object* movingObjectGeneratorObject = m_scene.makeObject();
-    movingObjectGeneratorObject->addComponent<MovingObjectGeneratorScript>();
+    // Object* movingObjectGeneratorObject = m_scene.makeObject();
+    // movingObjectGeneratorObject->addComponent<MovingObjectGeneratorScript>();
 
     Object* landObject = m_scene.makeObject();
     landObject->transform.position = { 0.0f, -10.0f, 0.0f };
@@ -95,15 +95,15 @@ public:
       light->color = { 5.0f, 5.0f, 5.0f };
     }
 
-    Object* plane1 = m_scene.makeObject();
-    {
-      plane1->transform.position = { 0.0f, 10.0f, 0.0f };
-      MeshRenderer* meshRenderer = plane1->addComponent<MeshRenderer>();
-      meshRenderer->mesh = m_resources.get<Mesh>(SID("su37"));
-      meshRenderer->materials.push_back(m_resources.get<Material>(SID("su37.body")));
-      meshRenderer->materials.push_back(m_resources.get<Material>(SID("su37.cockpit")));
-      meshRenderer->materials.push_back(m_resources.get<Material>(SID("su37.engine")));
-    }
+    // Object* plane1 = m_scene.makeObject();
+    // {
+    //   plane1->transform.position = { 0.0f, 10.0f, 0.0f };
+    //   MeshRenderer* meshRenderer = plane1->addComponent<MeshRenderer>();
+    //   meshRenderer->mesh = m_resources.get<Mesh>(SID("su37"));
+    //   meshRenderer->materials.push_back(m_resources.get<Material>(SID("su37.body")));
+    //   meshRenderer->materials.push_back(m_resources.get<Material>(SID("su37.cockpit")));
+    //   meshRenderer->materials.push_back(m_resources.get<Material>(SID("su37.engine")));
+    // }
 
     Object* mainCameraObject = m_scene.makeObject();
     {

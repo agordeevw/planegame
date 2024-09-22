@@ -1,3 +1,4 @@
+#include <content/MissileScript.h>
 #include <content/PlaneControlScript.h>
 #include <engine/ScriptIncludes.h>
 
@@ -22,6 +23,17 @@ void PlaneControlScript::initialize() {
 
 void PlaneControlScript::update() {
   Transform& transform = object.transform;
+
+  if (input().keyPressed[SDL_SCANCODE_SPACE]) {
+    // make and fire a missile
+    Object* missile = scene().makeObject();
+    missile->transform = transform;
+    MissileScript* missileScript = missile->addComponent<MissileScript>();
+    missileScript->initialVelocity = 3.0f * velocity;
+    MeshRenderer* renderer = missile->addComponent<MeshRenderer>();
+    renderer->mesh = resources().get<Mesh>(SID("object"));
+    renderer->materials.push_back(resources().get<Material>(SID("default.object")));
+  }
 
   const glm::vec3 forward = transform.forward();
   const glm::vec3 up = transform.up();
