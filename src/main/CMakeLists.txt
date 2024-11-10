@@ -7,7 +7,7 @@ add_executable(planegame.main ${PROJECT_SOURCES})
 set_property(TARGET planegame.main PROPERTY VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/bin")
 
 target_link_libraries(planegame.main
-    SDL2::SDL2main planegame.content planegame.engine)
+    SDL2::SDL2main planegame.engine)
 
 target_include_directories(planegame.main
     PUBLIC

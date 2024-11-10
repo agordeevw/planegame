@@ -28,22 +28,16 @@ protected:
   // related to resource import
   Mesh* importMesh(const char* filename, StringID sid);
 
-  // todo: this one should read things from manifest of sorts
+  virtual void loadScriptLoader() = 0;
+  virtual void unloadScriptLoader() = 0;
+  virtual Script* createScript(const char* scriptTypeName, Object& object) = 0;
+
   virtual void setUpResources();
 
-  // todo: this one should read things from scene description file
   virtual void setUpScene();
 
   void serializeScene(std::ostream& os);
   void deserializeScene(std::istream& is);
-  // Invoked by derived application to save script instantiation functions
-  template <class DerivedScript>
-  void registerScript() {
-    m_mapScriptNameToCreateFunction.emplace(DerivedScript::name(), [](Object& object) { return new DerivedScript(object); });
-  }
-  Script* createScript(const char* scriptName, Object& object) {
-    return m_mapScriptNameToCreateFunction.at(scriptName)(object);
-  }
 
 private:
   static void glDebugCallback(GLenum src, GLenum type, GLuint id, GLenum severity, GLsizei length, GLchar const* msg, void const* user_param) {
@@ -67,5 +61,4 @@ protected:
   Resources m_resources;
   Debug m_debug;
   std::unordered_map<void*, std::string> m_mapObjectToName;
-  std::unordered_map<std::string, std::function<Script*(Object&)>> m_mapScriptNameToCreateFunction;
 };

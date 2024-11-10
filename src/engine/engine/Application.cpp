@@ -409,6 +409,7 @@ void Application::run() {
     fprintf(stderr, "glCheckFramebufferStatus: %x\n", status);
   }
 
+  loadScriptLoader();
   setUpResources();
   setUpScene();
 
@@ -529,6 +530,25 @@ void Application::run() {
       if (m_input.keyDown[SDL_SCANCODE_LCTRL] && m_input.keyDown[SDL_SCANCODE_LSHIFT] && m_input.keyPressed[SDL_SCANCODE_L]) {
         std::ifstream f("scene.json");
         deserializeScene(f);
+      }
+      if (m_input.keyDown[SDL_SCANCODE_LCTRL] && m_input.keyDown[SDL_SCANCODE_LSHIFT] && m_input.keyPressed[SDL_SCANCODE_R]) {
+        std::vector<std::pair<std::string, Object*>> scriptObjectPairs;
+        for (const auto& script : m_scene.scripts.activeScripts) {
+          scriptObjectPairs.push_back({ script->getName(), &script->object });
+        }
+        for (const auto& script : m_scene.scripts.pendingScripts) {
+          scriptObjectPairs.push_back({ script->getName(), &script->object });
+        }
+
+        m_scene.scripts.activeScripts.clear();
+        m_scene.scripts.pendingScripts.clear();
+        unloadScriptLoader();
+        loadScriptLoader();
+
+        for (const auto& scriptObjectPair : scriptObjectPairs) {
+          Script* script = createScript(scriptObjectPair.first.c_str(), *scriptObjectPair.second);
+          scriptObjectPair.second->attachScript(script);
+        }
       }
     }
 

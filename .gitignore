@@ -1,3 +1,4 @@
+bin/**/*.dll.temp
 bin/**/*.dll
 bin/**/*.lib
 bin/**/*.exe
