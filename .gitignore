@@ -2,3 +2,4 @@ bin/**/*.dll
 bin/**/*.lib
 bin/**/*.exe
 build
+.vs
