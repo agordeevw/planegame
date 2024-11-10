@@ -67,3 +67,12 @@ void Scene::destroyObjects() {
 void Scene::setScriptContext(Script* script) {
   script->m_context = &scriptContext;
 }
+
+void Scene::clear() {
+  scripts.activeScripts.clear();
+  scripts.pendingScripts.clear();
+  components.cameras.clear();
+  components.lights.clear();
+  components.meshRenderers.clear();
+  objects.clear();
+}

@@ -7,8 +7,11 @@ class PlaneControlScript final : public Script {
 public:
   PlaneControlScript(Object& object);
 
+  static const char* name() { return "PlaneControlScript"; }
+
   void initialize() override;
   void update() override;
+  const char* getName() const override { return name(); }
 
   float minThrust = 100.0f;
   float maxThrust = 1000.0f;

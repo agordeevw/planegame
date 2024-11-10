@@ -76,7 +76,7 @@ void Application::shutDown() {
   SDL_Quit();
 }
 
-void Application::importMesh(const char* filename, StringID sid) {
+Mesh* Application::importMesh(const char* filename, StringID sid) {
   uint32_t vertexCount;
   uint32_t indexCount;
   uint32_t submeshCount;
@@ -130,6 +130,8 @@ void Application::importMesh(const char* filename, StringID sid) {
   for (uint32_t i = 0; i < submeshCount; i++) {
     mesh->submeshes[i] = { submeshes[2 * i + 0], submeshes[2 * i + 1] };
   }
+
+  return mesh;
 }
 
 void Application::setUpResources() {
@@ -151,6 +153,7 @@ void Application::setUpResources() {
       options.magFilter = GL_NEAREST;
       options.minFilter = GL_NEAREST;
       auto texture = m_resources.create<Texture2D>(makeSID(it.key().c_str()));
+      m_mapObjectToName[texture] = it.key().c_str();
       texture->initialize(options);
     }
   }
@@ -158,7 +161,8 @@ void Application::setUpResources() {
   if (jResources.contains("mesh")) {
     nlohmann::json jMeshes = jResources.at("mesh");
     for (nlohmann::json::iterator it = jMeshes.begin(); it != jMeshes.end(); ++it) {
-      importMesh(it.value().at("path").get<std::string>().c_str(), makeSID(it.key().c_str()));
+      Mesh* mesh = importMesh(it.value().at("path").get<std::string>().c_str(), makeSID(it.key().c_str()));
+      m_mapObjectToName[mesh] = it.key().c_str();
     }
   }
 
@@ -178,11 +182,199 @@ void Application::setUpResources() {
       Shader::Options options{};
       options.source = source.c_str();
       shader->initialize(options);
+      m_mapObjectToName[shader] = it.key().c_str();
+    }
+  }
+
+  if (jResources.contains("material")) {
+    nlohmann::json jMaterials = jResources.at("material");
+    for (nlohmann::json::iterator it = jMaterials.begin(); it != jMaterials.end(); ++it) {
+      auto material = m_resources.create<Material>(makeSID(it.key().c_str()));
+      material->initialize(m_resources.get<Shader>(makeSID(it.value().at("shader").get<std::string>().c_str())));
+
+      nlohmann::json values = it.value().at("values");
+      for (nlohmann::json::iterator itValue = values.begin(); itValue != values.end(); ++itValue) {
+        const char* valueName = itValue.key().c_str();
+        std::string valueTypeName = itValue.value().at(0).get<std::string>();
+        if (valueTypeName == "vec3") {
+          glm::vec3 v;
+          v[0] = itValue.value().at(1).at(0).get<float>();
+          v[1] = itValue.value().at(1).at(1).get<float>();
+          v[2] = itValue.value().at(1).at(2).get<float>();
+          material->setValue(valueName, v);
+        }
+        else {
+          throw std::runtime_error("unknown valueTypeName: " + valueTypeName);
+        }
+      }
+
+      m_mapObjectToName[material] = it.key().c_str();
     }
   }
 }
 
 void Application::setUpScene() {
+  try {
+    std::ifstream is("./scene.json");
+    deserializeScene(is);
+  }
+  catch (const nlohmann::json::parse_error& e) {
+    std::cerr << e.what() << std::endl;
+    throw e;
+  }
+}
+
+void Application::serializeScene(std::ostream& os) {
+  nlohmann::json j;
+
+  std::unordered_map<Object*, int> mapObjectToId;
+  {
+    int objectId = 0;
+    for (const auto& object : m_scene.objects) {
+      mapObjectToId[object.get()] = objectId++;
+    }
+  }
+
+  j["objects"] = nlohmann::json::array();
+  {
+    for (const auto& object : m_scene.objects) {
+      nlohmann::json jObject = {};
+      jObject["id"] = mapObjectToId.at(object.get());
+      if (object->parent()) {
+        jObject["parent"] = mapObjectToId.at(object->parent());
+      }
+      auto transformPosition = nlohmann::json::array({
+        object->transform.position[0],
+        object->transform.position[1],
+        object->transform.position[2],
+      });
+      auto transformRotation = nlohmann::json::array({
+        object->transform.rotation[0],
+        object->transform.rotation[1],
+        object->transform.rotation[2],
+        object->transform.rotation[3],
+      });
+      jObject["transform"] = nlohmann::json::array({ transformPosition, transformRotation });
+      if (object->tag != -1) {
+        jObject["tag"] = object->tag;
+      }
+      j["objects"].push_back(std::move(jObject));
+    }
+  }
+
+  j["components"] = {};
+  {
+    std::vector<nlohmann::json> jCameras;
+    for (const auto& camera : m_scene.components.cameras) {
+      nlohmann::json jCamera;
+      jCamera["object"] = mapObjectToId.at(&camera->object);
+      jCamera["fov"] = camera->fov;
+      jCamera["aspectRatio"] = camera->aspectRatio;
+      jCamera["isMain"] = camera->isMain;
+      jCameras.push_back(std::move(jCamera));
+    }
+    j["components"]["cameras"] = std::move(jCameras);
+  }
+  {
+    std::vector<nlohmann::json> jLights;
+    for (const auto& light : m_scene.components.lights) {
+      nlohmann::json jLight;
+      jLight["object"] = mapObjectToId.at(&light->object);
+      jLight["type"] = int(light->type);
+      jLight["color"] = nlohmann::json::array({
+        light->color[0],
+        light->color[1],
+        light->color[2],
+      });
+      jLights.push_back(std::move(jLight));
+    }
+    j["components"]["lights"] = std::move(jLights);
+  }
+  {
+    std::vector<nlohmann::json> jMeshRenderers;
+    for (const auto& meshRenderer : m_scene.components.meshRenderers) {
+      nlohmann::json jMeshRenderer;
+      jMeshRenderer["object"] = mapObjectToId.at(&meshRenderer->object);
+      jMeshRenderer["mesh"] = m_mapObjectToName.at(meshRenderer->mesh);
+      jMeshRenderer["materials"] = nlohmann::json::array();
+      for (const auto& material : meshRenderer->materials) {
+        jMeshRenderer["materials"].push_back(m_mapObjectToName.at(material));
+      }
+      jMeshRenderers.push_back(std::move(jMeshRenderer));
+    }
+    j["components"]["meshRenderers"] = std::move(jMeshRenderers);
+  }
+
+  {
+    std::vector<nlohmann::json> jScripts;
+    for (const auto& script : m_scene.scripts.activeScripts) {
+      nlohmann::json jScript;
+      jScript["object"] = mapObjectToId.at(&script->object);
+      jScript["type"] = script->getName();
+      // TODO: save properties of the script.
+      jScripts.push_back(std::move(jScript));
+    }
+    j["components"]["scripts"] = std::move(jScripts);
+  }
+
+  os << j.dump(2, ' ', false);
+}
+
+void Application::deserializeScene(std::istream& is) {
+  m_scene.clear();
+
+  nlohmann::json j;
+  is >> j;
+
+  std::unordered_map<int, Object*> mapIdToObject;
+  for (nlohmann::json::iterator it = j.at("objects").begin(); it != j.at("objects").end(); ++it) {
+    Object* object = m_scene.makeObject();
+    mapIdToObject[it.value().at("id").get<int>()] = object;
+    object->transform.position[0] = it.value().at("transform").at(0).at(0).get<float>();
+    object->transform.position[1] = it.value().at("transform").at(0).at(1).get<float>();
+    object->transform.position[2] = it.value().at("transform").at(0).at(2).get<float>();
+    object->transform.rotation[0] = it.value().at("transform").at(1).at(0).get<float>();
+    object->transform.rotation[1] = it.value().at("transform").at(1).at(1).get<float>();
+    object->transform.rotation[2] = it.value().at("transform").at(1).at(2).get<float>();
+    object->transform.rotation[3] = it.value().at("transform").at(1).at(3).get<float>();
+    if (it.value().contains("tag")) {
+      object->tag = uint32_t(it.value().at("tag").get<int>());
+    }
+  }
+  for (nlohmann::json::iterator it = j.at("objects").begin(); it != j.at("objects").end(); ++it) {
+    if (it.value().contains("parent")) {
+      mapIdToObject.at(it.value().at("parent").get<int>())->addChild(mapIdToObject.at(it.value().at("id").get<int>()));
+    }
+  }
+
+  for (nlohmann::json::iterator it = j.at("components").at("cameras").begin(); it != j.at("components").at("cameras").end(); ++it) {
+    auto* component = mapIdToObject.at(it.value().at("object").get<int>())->addComponent<Camera>();
+    component->fov = it.value().at("fov").get<float>();
+    component->aspectRatio = it.value().at("aspectRatio").get<float>();
+    component->isMain = it.value().at("isMain").get<bool>();
+  }
+
+  for (nlohmann::json::iterator it = j.at("components").at("lights").begin(); it != j.at("components").at("lights").end(); ++it) {
+    auto* component = mapIdToObject.at(it.value().at("object").get<int>())->addComponent<Light>();
+    component->type = LightType(it.value().at("type").get<int>());
+    component->color[0] = it.value().at("color").at(0).get<float>();
+    component->color[1] = it.value().at("color").at(1).get<float>();
+    component->color[2] = it.value().at("color").at(2).get<float>();
+  }
+
+  for (nlohmann::json::iterator it = j.at("components").at("meshRenderers").begin(); it != j.at("components").at("meshRenderers").end(); ++it) {
+    auto* component = mapIdToObject.at(it.value().at("object").get<int>())->addComponent<MeshRenderer>();
+    component->mesh = m_resources.get<Mesh>(makeSID(it.value().at("mesh").get<std::string>().c_str()));
+    for (nlohmann::json::iterator itMat = it.value().at("materials").begin(); itMat != it.value().at("materials").end(); ++itMat) {
+      component->materials.push_back(m_resources.get<Material>(makeSID(itMat.value().get<std::string>().c_str())));
+    }
+  }
+
+  for (nlohmann::json::iterator it = j.at("components").at("scripts").begin(); it != j.at("components").at("scripts").end(); ++it) {
+    Object* object = mapIdToObject.at(it.value().at("object").get<int>());
+    Script* script = createScript(it.value().at("type").get<std::string>().c_str(), *object);
+    object->attachScript(script);
+  }
 }
 
 void Application::run() {
@@ -329,6 +521,15 @@ void Application::run() {
       m_scene.scripts.pendingScripts.clear();
 
       m_scene.destroyObjects();
+
+      if (m_input.keyDown[SDL_SCANCODE_LCTRL] && m_input.keyDown[SDL_SCANCODE_LSHIFT] && m_input.keyPressed[SDL_SCANCODE_S]) {
+        std::ofstream f("scene.json");
+        serializeScene(f);
+      }
+      if (m_input.keyDown[SDL_SCANCODE_LCTRL] && m_input.keyDown[SDL_SCANCODE_LSHIFT] && m_input.keyPressed[SDL_SCANCODE_L]) {
+        std::ifstream f("scene.json");
+        deserializeScene(f);
+      }
     }
 
     // Render

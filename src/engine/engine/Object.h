@@ -7,6 +7,7 @@
 
 class Component;
 class Scene;
+class Script;
 
 class Object {
 public:
@@ -55,6 +56,10 @@ public:
 
 private:
   friend class Scene;
+  friend class Application;
+
+  // Used from application during deserialization
+  void attachScript(Script* script);
 
   Scene& m_scene;
   Object* m_parent = nullptr;

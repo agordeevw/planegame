@@ -7,8 +7,11 @@ class MissileScript final : public Script {
 public:
   MissileScript(Object& object);
 
+  static const char* name() { return "MissileScript"; }
+
   void initialize() override;
   void update() override;
+  const char* getName() const override { return name(); }
 
   float targetSpeed = 50.0f;
   float thrust = 100.0f;

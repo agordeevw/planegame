@@ -1,4 +1,6 @@
+#include <engine/Component/Script.h>
 #include <engine/Object.h>
+#include <engine/Scene.h>
 
 #include <algorithm>
 
@@ -25,4 +27,11 @@ bool Object::addChild(Object* object) {
     return true;
   }
   return false;
+}
+
+void Object::attachScript(Script* script) {
+  std::unique_ptr<Script> component;
+  component.reset(script);
+  m_components.push_back(script);
+  m_scene.registerComponent(std::move(component));
 }

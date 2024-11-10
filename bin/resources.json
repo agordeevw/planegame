@@ -34,5 +34,42 @@
     "debug.drawscreentext": {
       "path": "resources/debug.drawscreentext.shader"
     }
+  },
+  "material": {
+    "default.land": {
+      "shader": "default.land",
+      "values": {
+        "Material.color": ["vec3", [0.4,0.2,0.1]]
+      }
+    },
+    "default.object": {
+      "shader": "default",
+      "values": {
+        "Material.color": ["vec3", [1.0,1.0,1.0]]
+      }
+    },
+    "su37.body": {
+      "shader": "default",
+      "values": {
+        "Material.color": ["vec3", [0.2,0.4,0.2]]
+      }
+    },
+    "su37.cockpit": {
+      "shader": "default",
+      "values": {
+        "Material.color": ["vec3", [0.274425,0.282128,0.8]]
+      }
+    },
+    "su37.engine": {
+      "shader": "default",
+      "values": {
+        "Material.color": ["vec3", [0.1,0.1,0.1]]
+      }
+    },
+    "sky": {
+      "shader": "screenspace.sky",
+      "values": {
+      }
+    }
   }
 }

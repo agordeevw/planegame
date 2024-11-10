@@ -32,14 +32,14 @@ public:
 
   Camera* getMainCamera();
 
-  void tagChildObjectsAndComponents(Object& object);
-  void destroyObjects();
-
 private:
   // setting up script context and iterate over objects
   friend class Application;
 
+  void tagChildObjectsAndComponents(Object& object);
+  void destroyObjects();
   void setScriptContext(Script* script);
+  void clear();
 
   std::vector<std::unique_ptr<Object>> objects;
   Components components;

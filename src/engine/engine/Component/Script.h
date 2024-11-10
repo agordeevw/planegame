@@ -49,6 +49,7 @@ public:
 
   virtual void initialize() {}
   virtual void update() = 0;
+  virtual const char* getName() const = 0;
 
 protected:
   Scene& scene() { return *m_context->scene; }
