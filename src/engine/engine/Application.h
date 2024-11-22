@@ -51,6 +51,7 @@ private:
   SDL_GLContext m_context = nullptr;
   bool m_quit = false;
   bool m_shutdownCalled = false;
+  bool m_resizeWindow = false;
 
 protected:
   int m_width, m_height;

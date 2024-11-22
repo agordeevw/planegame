@@ -394,15 +394,30 @@ void Application::run() {
 
   GLuint color, depth, fbo;
 
-  glCreateTextures(GL_TEXTURE_2D, 1, &color);
-  glTextureStorage2D(color, 1, GL_SRGB8_ALPHA8, m_width, m_height);
+  auto createMainFramebuffer = [&]() {
+    glCreateTextures(GL_TEXTURE_2D, 1, &color);
+    glCreateTextures(GL_TEXTURE_2D, 1, &depth);
+    glCreateFramebuffers(1, &fbo);
 
-  glCreateTextures(GL_TEXTURE_2D, 1, &depth);
-  glTextureStorage2D(depth, 1, GL_DEPTH_COMPONENT32F, m_width, m_height);
+    glTextureStorage2D(color, 1, GL_SRGB8_ALPHA8, m_width, m_height);
+    glTextureStorage2D(depth, 1, GL_DEPTH_COMPONENT32F, m_width, m_height);
+    glNamedFramebufferTexture(fbo, GL_COLOR_ATTACHMENT0, color, 0);
+    glNamedFramebufferTexture(fbo, GL_DEPTH_ATTACHMENT, depth, 0);
+  };
 
-  glCreateFramebuffers(1, &fbo);
-  glNamedFramebufferTexture(fbo, GL_COLOR_ATTACHMENT0, color, 0);
-  glNamedFramebufferTexture(fbo, GL_DEPTH_ATTACHMENT, depth, 0);
+  createMainFramebuffer();
+
+  auto recreateMainFramebuffer = [&]() {
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glNamedFramebufferTexture(fbo, GL_COLOR_ATTACHMENT0, 0, 0);
+    glNamedFramebufferTexture(fbo, GL_DEPTH_ATTACHMENT, 0, 0);
+
+    glDeleteTextures(1, &color);
+    glDeleteTextures(1, &depth);
+    glDeleteFramebuffers(1, &fbo);
+
+    createMainFramebuffer();
+  };
 
   GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
   if (status != GL_FRAMEBUFFER_COMPLETE) {
@@ -553,6 +568,13 @@ void Application::run() {
     }
 
     // Render
+
+    if (m_resizeWindow) {
+      SDL_GL_GetDrawableSize(m_window, &m_width, &m_height);
+      recreateMainFramebuffer();
+      glViewport(0, 0, m_width, m_height);
+      m_resizeWindow = false;
+    }
 
     glBindFramebuffer(GL_FRAMEBUFFER, fbo);
     glClearDepthf(0.0f);
@@ -762,8 +784,8 @@ void Application::handleEvents() {
       case SDL_WINDOWEVENT: {
         switch (event.window.event) {
           case SDL_WINDOWEVENT_RESIZED: {
-            SDL_GL_GetDrawableSize(m_window, &m_width, &m_height);
-            glViewport(0, 0, m_width, m_height);
+            m_resizeWindow = true;
+            break;
           }
         }
       }
