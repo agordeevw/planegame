@@ -14,6 +14,7 @@
 #include <SDL.h>
 #include <SDL_image.h>
 #include <glad/glad.h>
+#include <imgui.h>
 #include <nlohmann/json.hpp>
 
 #include <fstream>
@@ -378,6 +379,21 @@ void Application::deserializeScene(std::istream& is) {
 }
 
 void Application::run() {
+  IMGUI_CHECKVERSION();
+  struct ScopedImGuiContext {
+    ScopedImGuiContext(ImGuiContext* ctx) : m_ctx(ctx) {}
+
+    ~ScopedImGuiContext() {
+      ImGui::DestroyContext(m_ctx);
+    }
+
+    ImGuiContext* m_ctx;
+  } scopedCtx(ImGui::CreateContext());
+  ImGui::GetIO().IniFilename = nullptr;
+  ImGui::GetIO().DisplaySize.x = float(m_width);
+  ImGui::GetIO().DisplaySize.y = float(m_height);
+  ImGui::StyleColorsDark();
+
   glEnable(GL_DEBUG_OUTPUT);
   glDebugMessageCallback(glDebugCallback, this);
   glDebugMessageControl(GL_DONT_CARE, GL_DONT_CARE, GL_DEBUG_SEVERITY_NOTIFICATION, 0, nullptr, GL_FALSE);
@@ -392,8 +408,44 @@ void Application::run() {
 
   glClipControl(GL_LOWER_LEFT, GL_ZERO_TO_ONE);
 
-  GLuint color, depth, fbo;
+  GLuint tex2dImguiFont;
+  {
+    unsigned char* fontPixels{};
+    int fontWidth{};
+    int fontHeight{};
+    ImGui::GetIO().Fonts->GetTexDataAsRGBA32(&fontPixels, &fontWidth, &fontHeight);
+    glCreateTextures(GL_TEXTURE_2D, 1, &tex2dImguiFont);
+    glTextureParameteri(tex2dImguiFont, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTextureParameteri(tex2dImguiFont, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTextureParameteri(tex2dImguiFont, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTextureParameteri(tex2dImguiFont, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTextureStorage2D(tex2dImguiFont, 1, GL_RGBA8, fontWidth, fontHeight);
+    glTextureSubImage2D(tex2dImguiFont, 0, 0, 0, fontWidth, fontHeight, GL_RGBA, GL_UNSIGNED_BYTE, fontPixels);
+  }
 
+  GLuint vboImguiVertexBuffer;
+  GLuint vboImguiIndexBuffer;
+  GLuint vaoImgui;
+  int imguiVertexBufferSize = 0;
+  int imguiIndexBufferSize = 0;
+  {
+    glCreateBuffers(1, &vboImguiVertexBuffer);
+    glCreateBuffers(1, &vboImguiIndexBuffer);
+    glCreateVertexArrays(1, &vaoImgui);
+    glVertexArrayVertexBuffer(vaoImgui, 0, vboImguiVertexBuffer, 0, sizeof(ImDrawVert));
+    glVertexArrayAttribFormat(vaoImgui, 0, 2, GL_FLOAT, GL_FALSE, offsetof(ImDrawVert, ImDrawVert::pos));
+    glVertexArrayAttribFormat(vaoImgui, 1, 2, GL_FLOAT, GL_FALSE, offsetof(ImDrawVert, ImDrawVert::uv));
+    glVertexArrayAttribFormat(vaoImgui, 2, 4, GL_UNSIGNED_BYTE, GL_TRUE, offsetof(ImDrawVert, ImDrawVert::col));
+    glVertexArrayAttribBinding(vaoImgui, 0, 0);
+    glVertexArrayAttribBinding(vaoImgui, 1, 0);
+    glVertexArrayAttribBinding(vaoImgui, 2, 0);
+    glEnableVertexArrayAttrib(vaoImgui, 0);
+    glEnableVertexArrayAttrib(vaoImgui, 1);
+    glEnableVertexArrayAttrib(vaoImgui, 2);
+    glVertexArrayElementBuffer(vaoImgui, vboImguiIndexBuffer);
+  }
+
+  GLuint color, depth, fbo;
   auto createMainFramebuffer = [&]() {
     glCreateTextures(GL_TEXTURE_2D, 1, &color);
     glCreateTextures(GL_TEXTURE_2D, 1, &depth);
@@ -571,6 +623,8 @@ void Application::run() {
 
     if (m_resizeWindow) {
       SDL_GL_GetDrawableSize(m_window, &m_width, &m_height);
+      ImGui::GetIO().DisplaySize.x = float(m_width);
+      ImGui::GetIO().DisplaySize.y = float(m_height);
       recreateMainFramebuffer();
       glViewport(0, 0, m_width, m_height);
       m_resizeWindow = false;
@@ -733,6 +787,118 @@ void Application::run() {
 
     m_debug.clear();
 
+    // UI
+
+    ImGui::GetIO().DisplaySize.x = float(m_width);
+    ImGui::GetIO().DisplaySize.y = float(m_height);
+
+    ImGui::NewFrame();
+
+    if (ImGui::BeginMainMenuBar()) {
+      if (ImGui::BeginMenu("File")) {
+        ImGui::EndMenu();
+      }
+      ImGui::EndMainMenuBar();
+    }
+
+    ImGui::Render();
+    ImDrawData* drawData = ImGui::GetDrawData();
+    if (drawData->Valid) {
+      GLboolean blendEnabled = glIsEnabled(GL_BLEND);
+      GLboolean cullFaceEnabled = glIsEnabled(GL_CULL_FACE);
+      GLboolean depthTestEnabled = glIsEnabled(GL_DEPTH_TEST);
+      GLboolean stencilTestEnabled = glIsEnabled(GL_STENCIL_TEST);
+      GLboolean scissorTestEnabled = glIsEnabled(GL_SCISSOR_TEST);
+      glEnable(GL_BLEND);
+      glBlendEquation(GL_FUNC_ADD);
+      glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+      glDisable(GL_CULL_FACE);
+      glDisable(GL_DEPTH_TEST);
+      glDisable(GL_STENCIL_TEST);
+      glEnable(GL_SCISSOR_TEST);
+
+      int totalVertexBufferSize = drawData->TotalVtxCount * int(sizeof(ImDrawVert));
+      if (imguiVertexBufferSize < totalVertexBufferSize) {
+        imguiVertexBufferSize = 2 * totalVertexBufferSize;
+        glDeleteBuffers(1, &vboImguiVertexBuffer);
+        glCreateBuffers(1, &vboImguiVertexBuffer);
+        glVertexArrayVertexBuffer(vaoImgui, 0, vboImguiVertexBuffer, 0, sizeof(ImDrawVert));
+        glNamedBufferStorage(vboImguiVertexBuffer, imguiVertexBufferSize, nullptr, GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT);
+      }
+      int totalIndexBufferSize = drawData->TotalIdxCount * int(sizeof(ImDrawIdx));
+      if (imguiIndexBufferSize < totalIndexBufferSize) {
+        imguiIndexBufferSize = 2 * totalIndexBufferSize;
+        glDeleteBuffers(1, &vboImguiIndexBuffer);
+        glCreateBuffers(1, &vboImguiIndexBuffer);
+        glVertexArrayElementBuffer(vaoImgui, vboImguiIndexBuffer);
+        glNamedBufferStorage(vboImguiIndexBuffer, imguiIndexBufferSize, nullptr, GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT);
+      }
+
+      void* vertexBufferData = glMapNamedBufferRange(
+        vboImguiVertexBuffer,
+        0,
+        totalVertexBufferSize,
+        GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_INVALIDATE_RANGE_BIT);
+      void* indexBufferData = glMapNamedBufferRange(
+        vboImguiIndexBuffer,
+        0,
+        totalIndexBufferSize,
+        GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_INVALIDATE_RANGE_BIT);
+      glBindVertexArray(vaoImgui);
+      glBindTextures(0, 1, &tex2dImguiFont);
+
+      glViewport(0, 0, (GLsizei)m_width, (GLsizei)m_height);
+      float L = drawData->DisplayPos.x;
+      float R = drawData->DisplayPos.x + drawData->DisplaySize.x;
+      float T = drawData->DisplayPos.y;
+      float B = drawData->DisplayPos.y + drawData->DisplaySize.y;
+      const glm::mat4 orthoProjection = {
+        { 2.0f / (R - L), 0.0f, 0.0f, 0.0f },
+        { 0.0f, 2.0f / (T - B), 0.0f, 0.0f },
+        { 0.0f, 0.0f, -1.0f, 0.0f },
+        { (R + L) / (L - R), (T + B) / (B - T), 0.0f, 1.0f },
+      };
+      Shader* imguiShader = m_resources.get<Shader>(SID("imgui"));
+      imguiShader->vertShader.setUniform(SID("proj"), orthoProjection);
+      glBindProgramPipeline(imguiShader->programPipeline);
+
+      int numDrawnVertices = 0;
+      int numDrawnIndices = 0;
+      int baseVertex = 0;
+      int baseIndex = 0;
+      for (ImDrawList* drawList : drawData->CmdLists) {
+        baseVertex = numDrawnVertices;
+        baseIndex = numDrawnIndices;
+
+        memcpy(
+          (char*)vertexBufferData + numDrawnVertices * sizeof(ImDrawVert),
+          drawList->VtxBuffer.Data,
+          drawList->VtxBuffer.size() * sizeof(ImDrawVert));
+        numDrawnVertices += drawList->VtxBuffer.size();
+
+        memcpy(
+          (char*)indexBufferData + numDrawnIndices * sizeof(ImDrawIdx),
+          drawList->IdxBuffer.Data,
+          drawList->IdxBuffer.size() * sizeof(ImDrawIdx));
+        numDrawnIndices += drawList->IdxBuffer.size();
+
+        for (const ImDrawCmd& cmd : drawList->CmdBuffer) {
+          glDrawElementsBaseVertex(GL_TRIANGLES,
+            cmd.ElemCount, GL_UNSIGNED_SHORT, (void*)((baseIndex + cmd.IdxOffset) * sizeof(ImDrawIdx)), baseVertex);
+        }
+      }
+      glUnmapNamedBuffer(vboImguiIndexBuffer);
+      glUnmapNamedBuffer(vboImguiVertexBuffer);
+      blendEnabled ? glEnable(GL_BLEND) : glDisable(GL_BLEND);
+      cullFaceEnabled ? glEnable(GL_CULL_FACE) : glDisable(GL_CULL_FACE);
+      depthTestEnabled ? glEnable(GL_DEPTH_TEST) : glDisable(GL_DEPTH_TEST);
+      stencilTestEnabled ? glEnable(GL_STENCIL_TEST) : glDisable(GL_STENCIL_TEST);
+      scissorTestEnabled ? glEnable(GL_SCISSOR_TEST) : glDisable(GL_SCISSOR_TEST);
+      glBindVertexArray(0);
+      glBindProgramPipeline(0);
+      glBindTextures(0, 0, nullptr);
+    }
+
     {
       glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
@@ -750,6 +916,274 @@ void Application::run() {
   }
 }
 
+namespace {
+ImGuiKey ImGui_ImplSDL2_KeyEventToImGuiKey(SDL_Keycode keycode, SDL_Scancode scancode) {
+  switch (keycode) {
+    case SDLK_TAB:
+      return ImGuiKey_Tab;
+    case SDLK_LEFT:
+      return ImGuiKey_LeftArrow;
+    case SDLK_RIGHT:
+      return ImGuiKey_RightArrow;
+    case SDLK_UP:
+      return ImGuiKey_UpArrow;
+    case SDLK_DOWN:
+      return ImGuiKey_DownArrow;
+    case SDLK_PAGEUP:
+      return ImGuiKey_PageUp;
+    case SDLK_PAGEDOWN:
+      return ImGuiKey_PageDown;
+    case SDLK_HOME:
+      return ImGuiKey_Home;
+    case SDLK_END:
+      return ImGuiKey_End;
+    case SDLK_INSERT:
+      return ImGuiKey_Insert;
+    case SDLK_DELETE:
+      return ImGuiKey_Delete;
+    case SDLK_BACKSPACE:
+      return ImGuiKey_Backspace;
+    case SDLK_SPACE:
+      return ImGuiKey_Space;
+    case SDLK_RETURN:
+      return ImGuiKey_Enter;
+    case SDLK_ESCAPE:
+      return ImGuiKey_Escape;
+    // case SDLK_QUOTE: return ImGuiKey_Apostrophe;
+    case SDLK_COMMA:
+      return ImGuiKey_Comma;
+    // case SDLK_MINUS: return ImGuiKey_Minus;
+    case SDLK_PERIOD:
+      return ImGuiKey_Period;
+    // case SDLK_SLASH: return ImGuiKey_Slash;
+    case SDLK_SEMICOLON:
+      return ImGuiKey_Semicolon;
+    // case SDLK_EQUALS: return ImGuiKey_Equal;
+    // case SDLK_LEFTBRACKET: return ImGuiKey_LeftBracket;
+    // case SDLK_BACKSLASH: return ImGuiKey_Backslash;
+    // case SDLK_RIGHTBRACKET: return ImGuiKey_RightBracket;
+    // case SDLK_BACKQUOTE: return ImGuiKey_GraveAccent;
+    case SDLK_CAPSLOCK:
+      return ImGuiKey_CapsLock;
+    case SDLK_SCROLLLOCK:
+      return ImGuiKey_ScrollLock;
+    case SDLK_NUMLOCKCLEAR:
+      return ImGuiKey_NumLock;
+    case SDLK_PRINTSCREEN:
+      return ImGuiKey_PrintScreen;
+    case SDLK_PAUSE:
+      return ImGuiKey_Pause;
+    case SDLK_KP_0:
+      return ImGuiKey_Keypad0;
+    case SDLK_KP_1:
+      return ImGuiKey_Keypad1;
+    case SDLK_KP_2:
+      return ImGuiKey_Keypad2;
+    case SDLK_KP_3:
+      return ImGuiKey_Keypad3;
+    case SDLK_KP_4:
+      return ImGuiKey_Keypad4;
+    case SDLK_KP_5:
+      return ImGuiKey_Keypad5;
+    case SDLK_KP_6:
+      return ImGuiKey_Keypad6;
+    case SDLK_KP_7:
+      return ImGuiKey_Keypad7;
+    case SDLK_KP_8:
+      return ImGuiKey_Keypad8;
+    case SDLK_KP_9:
+      return ImGuiKey_Keypad9;
+    case SDLK_KP_PERIOD:
+      return ImGuiKey_KeypadDecimal;
+    case SDLK_KP_DIVIDE:
+      return ImGuiKey_KeypadDivide;
+    case SDLK_KP_MULTIPLY:
+      return ImGuiKey_KeypadMultiply;
+    case SDLK_KP_MINUS:
+      return ImGuiKey_KeypadSubtract;
+    case SDLK_KP_PLUS:
+      return ImGuiKey_KeypadAdd;
+    case SDLK_KP_ENTER:
+      return ImGuiKey_KeypadEnter;
+    case SDLK_KP_EQUALS:
+      return ImGuiKey_KeypadEqual;
+    case SDLK_LCTRL:
+      return ImGuiKey_LeftCtrl;
+    case SDLK_LSHIFT:
+      return ImGuiKey_LeftShift;
+    case SDLK_LALT:
+      return ImGuiKey_LeftAlt;
+    case SDLK_LGUI:
+      return ImGuiKey_LeftSuper;
+    case SDLK_RCTRL:
+      return ImGuiKey_RightCtrl;
+    case SDLK_RSHIFT:
+      return ImGuiKey_RightShift;
+    case SDLK_RALT:
+      return ImGuiKey_RightAlt;
+    case SDLK_RGUI:
+      return ImGuiKey_RightSuper;
+    case SDLK_APPLICATION:
+      return ImGuiKey_Menu;
+    case SDLK_0:
+      return ImGuiKey_0;
+    case SDLK_1:
+      return ImGuiKey_1;
+    case SDLK_2:
+      return ImGuiKey_2;
+    case SDLK_3:
+      return ImGuiKey_3;
+    case SDLK_4:
+      return ImGuiKey_4;
+    case SDLK_5:
+      return ImGuiKey_5;
+    case SDLK_6:
+      return ImGuiKey_6;
+    case SDLK_7:
+      return ImGuiKey_7;
+    case SDLK_8:
+      return ImGuiKey_8;
+    case SDLK_9:
+      return ImGuiKey_9;
+    case SDLK_a:
+      return ImGuiKey_A;
+    case SDLK_b:
+      return ImGuiKey_B;
+    case SDLK_c:
+      return ImGuiKey_C;
+    case SDLK_d:
+      return ImGuiKey_D;
+    case SDLK_e:
+      return ImGuiKey_E;
+    case SDLK_f:
+      return ImGuiKey_F;
+    case SDLK_g:
+      return ImGuiKey_G;
+    case SDLK_h:
+      return ImGuiKey_H;
+    case SDLK_i:
+      return ImGuiKey_I;
+    case SDLK_j:
+      return ImGuiKey_J;
+    case SDLK_k:
+      return ImGuiKey_K;
+    case SDLK_l:
+      return ImGuiKey_L;
+    case SDLK_m:
+      return ImGuiKey_M;
+    case SDLK_n:
+      return ImGuiKey_N;
+    case SDLK_o:
+      return ImGuiKey_O;
+    case SDLK_p:
+      return ImGuiKey_P;
+    case SDLK_q:
+      return ImGuiKey_Q;
+    case SDLK_r:
+      return ImGuiKey_R;
+    case SDLK_s:
+      return ImGuiKey_S;
+    case SDLK_t:
+      return ImGuiKey_T;
+    case SDLK_u:
+      return ImGuiKey_U;
+    case SDLK_v:
+      return ImGuiKey_V;
+    case SDLK_w:
+      return ImGuiKey_W;
+    case SDLK_x:
+      return ImGuiKey_X;
+    case SDLK_y:
+      return ImGuiKey_Y;
+    case SDLK_z:
+      return ImGuiKey_Z;
+    case SDLK_F1:
+      return ImGuiKey_F1;
+    case SDLK_F2:
+      return ImGuiKey_F2;
+    case SDLK_F3:
+      return ImGuiKey_F3;
+    case SDLK_F4:
+      return ImGuiKey_F4;
+    case SDLK_F5:
+      return ImGuiKey_F5;
+    case SDLK_F6:
+      return ImGuiKey_F6;
+    case SDLK_F7:
+      return ImGuiKey_F7;
+    case SDLK_F8:
+      return ImGuiKey_F8;
+    case SDLK_F9:
+      return ImGuiKey_F9;
+    case SDLK_F10:
+      return ImGuiKey_F10;
+    case SDLK_F11:
+      return ImGuiKey_F11;
+    case SDLK_F12:
+      return ImGuiKey_F12;
+    case SDLK_F13:
+      return ImGuiKey_F13;
+    case SDLK_F14:
+      return ImGuiKey_F14;
+    case SDLK_F15:
+      return ImGuiKey_F15;
+    case SDLK_F16:
+      return ImGuiKey_F16;
+    case SDLK_F17:
+      return ImGuiKey_F17;
+    case SDLK_F18:
+      return ImGuiKey_F18;
+    case SDLK_F19:
+      return ImGuiKey_F19;
+    case SDLK_F20:
+      return ImGuiKey_F20;
+    case SDLK_F21:
+      return ImGuiKey_F21;
+    case SDLK_F22:
+      return ImGuiKey_F22;
+    case SDLK_F23:
+      return ImGuiKey_F23;
+    case SDLK_F24:
+      return ImGuiKey_F24;
+    case SDLK_AC_BACK:
+      return ImGuiKey_AppBack;
+    case SDLK_AC_FORWARD:
+      return ImGuiKey_AppForward;
+    default:
+      break;
+  }
+
+  // Fallback to scancode
+  switch (scancode) {
+    case SDL_SCANCODE_GRAVE:
+      return ImGuiKey_GraveAccent;
+    case SDL_SCANCODE_MINUS:
+      return ImGuiKey_Minus;
+    case SDL_SCANCODE_EQUALS:
+      return ImGuiKey_Equal;
+    case SDL_SCANCODE_LEFTBRACKET:
+      return ImGuiKey_LeftBracket;
+    case SDL_SCANCODE_RIGHTBRACKET:
+      return ImGuiKey_RightBracket;
+    case SDL_SCANCODE_NONUSBACKSLASH:
+      return ImGuiKey_Backslash;
+    case SDL_SCANCODE_SEMICOLON:
+      return ImGuiKey_Semicolon;
+    case SDL_SCANCODE_APOSTROPHE:
+      return ImGuiKey_Apostrophe;
+    case SDL_SCANCODE_COMMA:
+      return ImGuiKey_Comma;
+    case SDL_SCANCODE_PERIOD:
+      return ImGuiKey_Period;
+    case SDL_SCANCODE_SLASH:
+      return ImGuiKey_Slash;
+    default:
+      break;
+  }
+  return ImGuiKey_None;
+}
+} // namespace
+
 void Application::handleEvents() {
   m_input.mousedx = 0.0;
   m_input.mousedy = 0.0;
@@ -757,6 +1191,8 @@ void Application::handleEvents() {
     m_input.keyPressed[scancode] = false;
     m_input.keyReleased[scancode] = false;
   }
+
+  ImGui::GetIO();
 
   SDL_Event event;
   while (SDL_PollEvent(&event)) {
@@ -768,17 +1204,47 @@ void Application::handleEvents() {
       case SDL_KEYDOWN:
       case SDL_KEYUP: {
         if (event.key.repeat == 0) {
-          auto scancode = event.key.keysym.scancode;
+          SDL_Scancode scancode = event.key.keysym.scancode;
           m_input.prevKeyDown[scancode] = m_input.keyDown[scancode];
           m_input.keyDown[scancode] = event.key.state == SDL_PRESSED;
           m_input.keyPressed[scancode] = event.key.state == SDL_PRESSED;
           m_input.keyReleased[scancode] = event.key.state == SDL_RELEASED;
+          ImGui::GetIO().AddKeyEvent(
+            ImGui_ImplSDL2_KeyEventToImGuiKey(event.key.keysym.sym, scancode),
+            event.key.state == SDL_PRESSED);
         }
         break;
       }
       case SDL_MOUSEMOTION: {
         m_input.mousedx = float(event.motion.xrel);
         m_input.mousedy = float(event.motion.yrel);
+        ImGui::GetIO().AddMouseSourceEvent(ImGuiMouseSource::ImGuiMouseSource_Mouse);
+        ImGui::GetIO().AddMousePosEvent((float)event.motion.x, (float)event.motion.y);
+        break;
+      }
+      case SDL_MOUSEBUTTONDOWN:
+      case SDL_MOUSEBUTTONUP: {
+        int mouseButton = -1;
+        switch (event.button.button) {
+          case SDL_BUTTON_LEFT:
+            mouseButton = 0;
+            break;
+          case SDL_BUTTON_RIGHT:
+            mouseButton = 1;
+            break;
+          case SDL_BUTTON_MIDDLE:
+            mouseButton = 2;
+            break;
+        }
+        if (mouseButton == -1) {
+          break;
+        }
+        ImGui::GetIO().AddMouseSourceEvent(ImGuiMouseSource::ImGuiMouseSource_Mouse);
+        ImGui::GetIO().AddMouseButtonEvent(mouseButton, event.type == SDL_MOUSEBUTTONDOWN);
+        break;
+      }
+      case SDL_TEXTINPUT: {
+        ImGui::GetIO().AddInputCharactersUTF8(event.text.text);
         break;
       }
       case SDL_WINDOWEVENT: {

@@ -33,6 +33,9 @@
     },
     "debug.drawscreentext": {
       "path": "resources/debug.drawscreentext.shader"
+    },
+    "imgui": {
+      "path": "resources/imgui.shader"
     }
   },
   "material": {
